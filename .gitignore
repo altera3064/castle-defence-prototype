@@ -1,0 +1,17 @@
+# OS and editor noise
+Thumbs.db
+Desktop.ini
+.DS_Store
+.vscode/
+.idea/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+
+# Local runtime/cache folders
+node_modules/
+dist/
+build/
+.cache/
