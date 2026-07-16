@@ -59,7 +59,6 @@
     pendingNormalizeTypes: new Set(),
     recruitHold: null,
     selectedSquad: null,
-    selectedCell: null,
     grid: [],
     structures: new Map(),
     squads: [],
@@ -304,12 +303,11 @@
     if (squad) {
       state.selectedSquad = squad;
       state.draggingSquad = squad;
-      state.selectedCell = null;
       updateReadout();
       return;
     }
 
-    selectStructure(x, y);
+    state.selectedSquad = null;
     updateReadout();
   }
 
@@ -648,7 +646,6 @@
     army.formationSize = army.members.length;
     updateArmyCenter(army);
     state.selectedSquad = army;
-    state.selectedCell = null;
     updateReadout();
     return true;
   }
@@ -724,12 +721,6 @@
     if (selectedType === type) {
       state.selectedSquad = state.squads.find((squad) => squad.type === type) || null;
     }
-  }
-
-  function selectStructure(x, y) {
-    const structure = state.structures.get(idx(x, y));
-    state.selectedCell = structure || null;
-    state.selectedSquad = null;
   }
 
   function findSquadAt(x, y) {
@@ -851,8 +842,8 @@
   function makeWave(wave) {
     const total = 50 + (wave - 1) * 10;
     const queue = [];
-    const siegeChance = Math.min(0.028, wave >= 2 ? 0.008 + wave * 0.0025 : 0);
-    const bruiserChance = Math.min(0.48, 0.24 + wave * 0.035);
+    const siegeChance = wave >= 2 ? 0.1 : 0.05;
+    const bruiserChance = Math.min(0.45, 0.22 + wave * 0.025);
     for (let i = 0; i < total; i += 1) {
       const roll = Math.random();
       if (roll < siegeChance) queue.push("siege");
@@ -867,11 +858,12 @@
     const x = COLS + 0.7 + Math.random() * 0.6;
     const y = VALLEY_TOP + 0.6 + Math.random() * (VALLEY_BOTTOM - VALLEY_TOP - 0.2);
     const waveScale = Math.max(0, state.wave - 1);
+    const bossTier = Math.max(1, Math.floor(state.wave / 10));
     const base = {
       runner: { hp: 68 + waveScale * 7, speed: 2.35, damage: 12 + waveScale * 1, gold: 2, radius: 0.22 },
       bruiser: { hp: 140 + waveScale * 13, speed: 1.6, damage: 23 + waveScale * 2, gold: 4, radius: 0.28 },
       siege: { hp: 300 + waveScale * 24, speed: 0.9, damage: 45 + waveScale * 3, gold: 10, radius: 0.36 },
-      boss: { hp: 1800 + waveScale * 70, speed: 0.72, damage: 70 + waveScale * 4, gold: 120, radius: 0.58, attackRange: 2.15, splashRadius: 1.35 },
+      boss: { hp: 1900 + bossTier * 950 + waveScale * 35, speed: 0.68, damage: 80 + bossTier * 45 + waveScale * 2, gold: 160 + bossTier * 70, radius: 1.0, attackRange: 2.65, splashRadius: 2.0 },
     }[type];
     state.monsters.push({
       type,
@@ -1235,19 +1227,54 @@
   }
 
   function castBossLightning(monster) {
-    const target = nearestSoldier(monster.x, monster.y, 7.5);
+    const target = nearestSoldier(monster.x, monster.y, 7.5) || nearestStructurePoint(monster.x, monster.y, 7.5);
     if (!target) return false;
-    const splashRadius = monster.splashRadius || 1.35;
+    const splashRadius = monster.splashRadius || 2.0;
     getAllSoldiers().forEach((member) => {
       const d = Math.hypot(member.x - target.x, member.y - target.y);
       if (d > splashRadius) return;
       const armor = member.type === "melee" ? 0.9 : 1;
-      const falloff = Math.max(0.35, 1 - d / (splashRadius * 1.5));
-      member.hp -= monster.damage * 0.62 * armor * falloff;
+      const falloff = Math.max(0.45, 1 - d / (splashRadius * 1.35));
+      member.hp -= monster.damage * 1.1 * armor * falloff;
     });
-    state.effects.push({ type: "bossLightning", x: target.x, y: target.y, radius: 0.12, life: 0.38, maxLife: 0.38 });
-    state.shake = 0.1;
+    state.structures.forEach((structure) => {
+      const sx = structure.x + 0.5;
+      const sy = structure.y + 0.5;
+      const d = Math.hypot(sx - target.x, sy - target.y);
+      if (d > splashRadius) return;
+      const falloff = Math.max(0.45, 1 - d / (splashRadius * 1.35));
+      const damage = monster.damage * 0.95 * falloff;
+      if (structure.hasTower) {
+        structure.towerHp = (structure.towerHp || 115) - damage;
+        if (structure.towerHp <= 0) {
+          structure.hasTower = false;
+          structure.towerHp = 0;
+          structure.towerMaxHp = 0;
+          state.effects.push({ type: "break", x: sx, y: sy - 0.15, life: 0.7, maxLife: 0.7 });
+        }
+      }
+      structure.hp -= damage;
+      state.effects.push({ type: "hit", x: sx, y: sy, life: 0.15, maxLife: 0.15 });
+      if (structure.hp <= 0) destroyStructure(structure);
+    });
+    state.effects.push({ type: "bossLightning", x: target.x, y: target.y, radius: splashRadius, life: 0.48, maxLife: 0.48 });
+    state.shake = 0.22;
     return true;
+  }
+
+  function nearestStructurePoint(x, y, range) {
+    let best = null;
+    let bestD = range;
+    state.structures.forEach((structure) => {
+      const sx = structure.x + 0.5;
+      const sy = structure.y + 0.5;
+      const d = Math.hypot(sx - x, sy - y);
+      if (d < bestD) {
+        bestD = d;
+        best = { x: sx, y: sy };
+      }
+    });
+    return best;
   }
 
   function attackStructure(monster, structure) {
@@ -1512,6 +1539,7 @@
     drawGround();
     drawStructures();
     drawSquads();
+    drawSquadFlags();
     drawMonsters();
     drawProjectiles();
     drawEffects();
@@ -1650,7 +1678,8 @@
         ctx.lineWidth = 3;
         ctx.strokeRect(px - 9, py - 7, 18, 14);
       }
-      drawHpBar(px - 9, py - 13, 18, monster.hp / monster.maxHp);
+      const hpWidth = monster.type === "boss" ? 42 : 18;
+      drawHpBar(px - hpWidth / 2, py - monster.radius * CELL - 8, hpWidth, monster.hp / monster.maxHp);
     });
   }
 
@@ -1716,17 +1745,21 @@
         const px = effect.x * CELL;
         const py = effect.y * CELL;
         ctx.strokeStyle = "rgba(156, 221, 255, 0.9)";
-        ctx.lineWidth = 3;
+        ctx.lineWidth = 4;
         ctx.beginPath();
-        ctx.moveTo(px - 10, py - 36);
-        ctx.lineTo(px + 2, py - 16);
-        ctx.lineTo(px - 5, py - 16);
-        ctx.lineTo(px + 8, py + 12);
+        ctx.moveTo(px - 12, py - 44);
+        ctx.lineTo(px + 4, py - 18);
+        ctx.lineTo(px - 4, py - 18);
+        ctx.lineTo(px + 12, py + 18);
         ctx.stroke();
+        ctx.fillStyle = `rgba(106, 184, 255, ${0.18 * alpha})`;
+        ctx.beginPath();
+        ctx.arc(px, py, effect.radius * CELL, 0, Math.PI * 2);
+        ctx.fill();
         ctx.strokeStyle = "rgba(156, 221, 255, 0.5)";
         ctx.lineWidth = 2;
         ctx.beginPath();
-        ctx.arc(px, py, effect.radius * CELL * 5.2, 0, Math.PI * 2);
+        ctx.arc(px, py, effect.radius * CELL, 0, Math.PI * 2);
         ctx.stroke();
       }
       if (effect.type === "stoneImpact") {
@@ -1770,21 +1803,61 @@
 
   function drawSelection() {
     if (state.selectedSquad) {
-      ctx.strokeStyle = "#ffffff";
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(state.selectedSquad.x * CELL, state.selectedSquad.y * CELL, 18 + state.selectedSquad.members.length * 1.2, 0, Math.PI * 2);
-      ctx.stroke();
+      drawSelectedUnitMarkers(state.selectedSquad);
       ctx.strokeStyle = "rgba(255,255,255,0.35)";
       ctx.beginPath();
       ctx.arc(state.selectedSquad.targetX * CELL, state.selectedSquad.targetY * CELL, 8, 0, Math.PI * 2);
       ctx.stroke();
     }
-    if (state.selectedCell) {
+  }
+
+  function drawSelectedUnitMarkers(squad) {
+    squad.members.forEach((member) => {
+      const px = member.x * CELL;
+      const py = member.y * CELL;
+      const radius = member.radius * CELL + 3;
+      ctx.fillStyle = "rgba(255,255,255,0.16)";
+      ctx.beginPath();
+      ctx.ellipse(px, py + radius * 0.35, radius * 1.05, radius * 0.45, 0, 0, Math.PI * 2);
+      ctx.fill();
       ctx.strokeStyle = "#ffffff";
-      ctx.lineWidth = 2;
-      ctx.strokeRect(state.selectedCell.x * CELL + 1, state.selectedCell.y * CELL + 1, CELL - 2, CELL - 2);
-    }
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.ellipse(px, py + radius * 0.35, radius * 1.05, radius * 0.45, 0, 0, Math.PI * 2);
+      ctx.stroke();
+    });
+  }
+
+  function drawSquadFlags() {
+    state.squads.forEach((squad) => drawSquadFlag(squad, squad === state.selectedSquad));
+  }
+
+  function drawSquadFlag(squad, selected = false) {
+    const px = squad.x * CELL;
+    const py = squad.y * CELL;
+    const color = squad.type === "melee" ? "#75c46b" : squad.type === "archer" ? "#7ec7e8" : "#d6b95f";
+    ctx.save();
+    ctx.globalAlpha = selected ? 1 : 0.82;
+    ctx.strokeStyle = "#f8fbff";
+    ctx.lineWidth = selected ? 3 : 2;
+    ctx.beginPath();
+    ctx.moveTo(px, py + 7);
+    ctx.lineTo(px, py - 24);
+    ctx.stroke();
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(px + 1, py - 24);
+    ctx.lineTo(px + 19, py - 19);
+    ctx.lineTo(px + 1, py - 13);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = "rgba(0,0,0,0.45)";
+    ctx.stroke();
+    ctx.fillStyle = "#f8fbff";
+    ctx.beginPath();
+    ctx.arc(px, py + 8, selected ? 4 : 3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
   }
 
   function drawAlerts() {
@@ -1830,12 +1903,6 @@
       const totalHp = state.selectedSquad.members.reduce((sum, member) => sum + Math.max(0, member.hp), 0);
       const maxHp = state.selectedSquad.members.reduce((sum, member) => sum + member.maxHp, 0);
       ui.readout.textContent = `${label} | 인원 ${state.selectedSquad.members.length} | 체력 ${Math.ceil(totalHp)}/${maxHp}`;
-      return;
-    }
-    if (state.selectedCell) {
-      const labels = { wall: "성벽", gate: "성문", tower: "화살탑", meleeBarracks: "근접 병영", archerBarracks: "궁수 병영", catapultWorkshop: "투석기 제작소" };
-      const label = state.selectedCell.hasTower ? "성벽 + 화살탑" : labels[state.selectedCell.type];
-      ui.readout.textContent = `${label} | 내구도 ${Math.ceil(state.selectedCell.hp)}/${state.selectedCell.maxHp}`;
       return;
     }
     ui.readout.textContent = "선택: 없음";
