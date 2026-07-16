@@ -19,6 +19,12 @@
     upgradeSoldiers: document.getElementById("upgradeSoldiers"),
     upgradeTowers: document.getElementById("upgradeTowers"),
     upgradeWalls: document.getElementById("upgradeWalls"),
+    buildMode: document.getElementById("buildMode"),
+    productionMode: document.getElementById("productionMode"),
+    upgradeMode: document.getElementById("upgradeMode"),
+    buildPanel: document.getElementById("buildPanel"),
+    productionPanel: document.getElementById("productionPanel"),
+    upgradePanel: document.getElementById("upgradePanel"),
   };
 
   const COLS = 32;
@@ -28,6 +34,7 @@
   const VALLEY_BOTTOM = 16;
   const CORE = { x: 6, y: 11, hp: 1200, maxHp: 1200 };
   const MAX_SQUAD_SIZE = 30;
+  const MAX_CATAPULTS = 10;
   const costs = {
     wall: 5,
     gate: 15,
@@ -37,7 +44,7 @@
     catapultWorkshop: 30,
     melee: 10,
     archer: 15,
-    catapult: 50,
+    catapult: 80,
   };
 
   const state = {
@@ -48,6 +55,7 @@
     spawnTimer: 0,
     gameOver: false,
     won: false,
+    commandMode: "build",
     tool: "wall",
     spellMode: null,
     draggingSquad: null,
@@ -111,6 +119,7 @@
     buildStartingKeep();
     bindInput();
     setTool("wall");
+    setCommandMode("build");
     updateUi();
     requestAnimationFrame(loop);
   }
@@ -157,6 +166,9 @@
     ui.upgradeSoldiers.addEventListener("click", upgradeSoldiers);
     ui.upgradeTowers.addEventListener("click", upgradeTowers);
     ui.upgradeWalls.addEventListener("click", upgradeWalls);
+    ui.buildMode.addEventListener("click", () => setCommandMode("build"));
+    ui.productionMode.addEventListener("click", () => setCommandMode("production"));
+    ui.upgradeMode.addEventListener("click", () => setCommandMode("upgrade"));
 
     canvas.addEventListener("pointerdown", onPointerDown);
     canvas.addEventListener("pointermove", onPointerMove);
@@ -229,8 +241,9 @@
   function updateRecruitPreview() {
     if (!state.recruitHold) return;
     const { type, count } = state.recruitHold;
-    const cost = count * costs[type];
-    const label = `${unitLabel(type)} ${count}명 ${cost}G`;
+    const actualCount = type === "catapult" ? Math.min(count, availableCatapultSlots()) : count;
+    const cost = actualCount * costs[type];
+    const label = actualCount > 0 ? `${unitLabel(type)} ${actualCount}명 ${cost}G` : "투석기 최대 10대";
     if (type === "melee") ui.recruitMelee.textContent = label;
     if (type === "archer") ui.recruitArcher.textContent = label;
     if (type === "catapult") ui.recruitCatapult.textContent = label;
@@ -244,6 +257,25 @@
     });
     setStatus(toolLabel(tool));
     updateReadout();
+  }
+
+  function setCommandMode(mode) {
+    state.commandMode = mode;
+    ui.buildMode.classList.toggle("active", mode === "build");
+    ui.productionMode.classList.toggle("active", mode === "production");
+    ui.upgradeMode.classList.toggle("active", mode === "upgrade");
+    ui.buildPanel.classList.toggle("active", mode === "build");
+    ui.productionPanel.classList.toggle("active", mode === "production");
+    ui.upgradePanel.classList.toggle("active", mode === "upgrade");
+    ui.buildPanel.hidden = mode !== "build";
+    ui.productionPanel.hidden = mode !== "production";
+    ui.upgradePanel.hidden = mode !== "upgrade";
+    if (mode !== "build" && state.tool !== "select") setTool("select");
+    if (mode === "build" && state.tool === "select") setTool("wall");
+    if (mode === "production") setStatus("생산 모드입니다. 병력을 모집하고 전투 명령을 사용하세요.");
+    if (mode === "upgrade") setStatus("강화 모드입니다. 방어 시설을 강화하세요.");
+    if (mode === "build") setStatus(toolLabel(state.tool));
+    updateUi();
   }
 
   function toolLabel(tool) {
@@ -282,6 +314,15 @@
       return;
     }
 
+    const squad = findSquadAt(x, y);
+    if (squad) {
+      state.selectedSquad = squad;
+      state.draggingSquad = squad;
+      stopTileDrag();
+      updateReadout();
+      return;
+    }
+
     if (state.tool === "erase") {
       state.eraseDragActive = true;
       state.lastEraseCell = { x, y };
@@ -296,14 +337,6 @@
         state.lastWallCell = { x, y };
       }
       placeStructure(x, y, state.tool, true);
-      return;
-    }
-
-    const squad = findSquadAt(x, y);
-    if (squad) {
-      state.selectedSquad = squad;
-      state.draggingSquad = squad;
-      updateReadout();
       return;
     }
 
@@ -393,8 +426,13 @@
   }
 
   function canPlace(x, y, type = "default") {
-    const unitBlocksPlacement = type !== "wall" && findSquadAt(x, y);
+    const unitBlocksPlacement =
+      type === "wall" ? hasNonArcherOnCell(x, y) : findSquadAt(x, y);
     return inBounds(x, y) && state.grid[idx(x, y)] === "empty" && !unitBlocksPlacement;
+  }
+
+  function hasNonArcherOnCell(x, y) {
+    return getAllSoldiers().some((member) => member.type !== "archer" && Math.floor(member.x) === x && Math.floor(member.y) === y);
   }
 
   function canPlaceTowerOnWall(x, y) {
@@ -473,7 +511,6 @@
       setStatus("웨이브 중에는 방어 시설을 새로 지을 수 없습니다.");
       return false;
     }
-    if (type === "wall" && pay) pushUnitsFromCell(x, y);
     if (type === "tower" && canPlaceTowerOnWall(x, y)) {
       pushUnitsFromCell(x, y);
       if (pay && !spend(costs.tower)) return false;
@@ -556,10 +593,25 @@
     updateUi();
   }
 
+  function unitCount(type) {
+    return state.squads.reduce((total, squad) => {
+      if (squad.type !== type) return total;
+      return total + squad.members.length;
+    }, 0);
+  }
+
+  function availableCatapultSlots() {
+    return Math.max(0, MAX_CATAPULTS - unitCount("catapult"));
+  }
+
   function recruitUnit(type, pay) {
     const spawn = findSpawnPoint(type);
     if (!spawn) {
       setStatus(type === "catapult" ? "투석기 제작소가 필요합니다." : type === "archer" ? "궁수 병영이 필요합니다." : "근접 병영이 필요합니다.");
+      return false;
+    }
+    if (type === "catapult" && availableCatapultSlots() <= 0) {
+      setStatus("투석기는 최대 10대까지 보유할 수 있습니다.");
       return false;
     }
     if (pay && !spend(costs[type])) return false;
@@ -574,8 +626,13 @@
       setStatus(type === "catapult" ? "투석기 제작소가 필요합니다." : type === "archer" ? "궁수 병영이 필요합니다." : "근접 병영이 필요합니다.");
       return false;
     }
+    const cappedRequest = type === "catapult" ? Math.min(requestedCount, availableCatapultSlots()) : requestedCount;
+    if (cappedRequest <= 0) {
+      setStatus(type === "catapult" ? "투석기는 최대 10대까지 보유할 수 있습니다." : "모집할 수 있는 병력이 없습니다.");
+      return false;
+    }
     const affordable = Math.floor(state.gold / costs[type]);
-    const count = pay ? Math.min(requestedCount, affordable) : requestedCount;
+    const count = pay ? Math.min(cappedRequest, affordable) : cappedRequest;
     if (count <= 0) {
       setStatus("골드가 부족합니다.");
       return false;
@@ -618,6 +675,7 @@
 
   function addSquad(type, x, y, pay) {
     if (!canStand(x, y)) return false;
+    if (type === "catapult" && unitCount("catapult") >= MAX_CATAPULTS) return false;
     if (pay && !spend(costs[type])) return false;
 
     let army = state.squads.find((squad) => squad.type === type && squad.members.length < MAX_SQUAD_SIZE);
@@ -835,6 +893,7 @@
     state.waveActive = true;
     state.spawnQueue = makeWave(state.wave);
     state.spawnTimer = 0;
+    setCommandMode("production");
     setStatus(`${state.wave} 웨이브 시작.`);
     updateUi();
   }
@@ -863,7 +922,7 @@
       runner: { hp: 68 + waveScale * 7, speed: 2.35, damage: 12 + waveScale * 1, gold: 2, radius: 0.22 },
       bruiser: { hp: 140 + waveScale * 13, speed: 1.6, damage: 23 + waveScale * 2, gold: 4, radius: 0.28 },
       siege: { hp: 300 + waveScale * 24, speed: 0.9, damage: 45 + waveScale * 3, gold: 10, radius: 0.36 },
-      boss: { hp: 1900 + bossTier * 950 + waveScale * 35, speed: 0.68, damage: 80 + bossTier * 45 + waveScale * 2, gold: 160 + bossTier * 70, radius: 1.0, attackRange: 2.65, splashRadius: 2.0 },
+      boss: { hp: 2400 + bossTier * 1200 + waveScale * 55, speed: 0.68, damage: 95 + bossTier * 60 + waveScale * 3, gold: 160 + bossTier * 70, radius: 1.0, attackRange: 2.65, splashRadius: 2.35 },
     }[type];
     state.monsters.push({
       type,
@@ -878,7 +937,7 @@
       attackRange: base.attackRange,
       splashRadius: base.splashRadius,
       attackTimer: 0,
-      specialTimer: type === "boss" ? 4.5 + Math.random() * 3 : 0,
+      specialTimer: type === "boss" ? 2.2 + Math.random() * 1.8 : 0,
       slow: 0,
     });
   }
@@ -887,12 +946,13 @@
     if (state.cooldowns[spell] > 0) return;
     if (spell === "meteor") {
       state.cooldowns.meteor = 16;
-      state.effects.push({ type: "meteor", x, y, radius: 0.1, life: 0.7, maxLife: 0.7 });
+      const killRadius = 3.0;
+      state.effects.push({ type: "meteorStrike", x, y, blastRadius: killRadius, life: 0.72, maxLife: 0.72 });
       state.monsters.forEach((monster) => {
         const d = Math.hypot(monster.x - x, monster.y - y);
-        if (d <= 3.0) monster.hp -= 180 * (1 - d / 4.2);
+        if (d <= killRadius) monster.hp = 0;
       });
-      state.shake = 0.22;
+      state.shake = 0.3;
       setStatus("메테오 시전.");
     }
     if (spell === "knockback") {
@@ -1180,7 +1240,7 @@
       if (monster.type === "boss") {
         monster.specialTimer -= dt;
         if (monster.specialTimer <= 0 && castBossLightning(monster)) {
-          monster.specialTimer = 7.5 + Math.random() * 4;
+          monster.specialTimer = 4.2 + Math.random() * 2.2;
           return;
         }
       }
@@ -1227,23 +1287,23 @@
   }
 
   function castBossLightning(monster) {
-    const target = nearestSoldier(monster.x, monster.y, 7.5) || nearestStructurePoint(monster.x, monster.y, 7.5);
+    const target = nearestSoldier(monster.x, monster.y, 8.5) || nearestStructurePoint(monster.x, monster.y, 8.5);
     if (!target) return false;
     const splashRadius = monster.splashRadius || 2.0;
     getAllSoldiers().forEach((member) => {
       const d = Math.hypot(member.x - target.x, member.y - target.y);
       if (d > splashRadius) return;
       const armor = member.type === "melee" ? 0.9 : 1;
-      const falloff = Math.max(0.45, 1 - d / (splashRadius * 1.35));
-      member.hp -= monster.damage * 1.1 * armor * falloff;
+      const falloff = Math.max(0.6, 1 - d / (splashRadius * 1.45));
+      member.hp -= monster.damage * 1.45 * armor * falloff;
     });
     state.structures.forEach((structure) => {
       const sx = structure.x + 0.5;
       const sy = structure.y + 0.5;
       const d = Math.hypot(sx - target.x, sy - target.y);
       if (d > splashRadius) return;
-      const falloff = Math.max(0.45, 1 - d / (splashRadius * 1.35));
-      const damage = monster.damage * 0.95 * falloff;
+      const falloff = Math.max(0.6, 1 - d / (splashRadius * 1.45));
+      const damage = monster.damage * 1.35 * falloff;
       if (structure.hasTower) {
         structure.towerHp = (structure.towerHp || 115) - damage;
         if (structure.towerHp <= 0) {
@@ -1257,8 +1317,8 @@
       state.effects.push({ type: "hit", x: sx, y: sy, life: 0.15, maxLife: 0.15 });
       if (structure.hp <= 0) destroyStructure(structure);
     });
-    state.effects.push({ type: "bossLightning", x: target.x, y: target.y, radius: splashRadius, life: 0.48, maxLife: 0.48 });
-    state.shake = 0.22;
+    state.effects.push({ type: "bossLightning", x: target.x, y: target.y, radius: splashRadius, life: 0.58, maxLife: 0.58 });
+    state.shake = 0.32;
     return true;
   }
 
@@ -1717,10 +1777,29 @@
         ctx.arc(effect.tx * CELL, effect.ty * CELL, 9, 0, Math.PI * 1.4);
         ctx.stroke();
       }
-      if (effect.type === "meteor") {
-        ctx.fillStyle = "rgba(255, 101, 53, 0.38)";
+      if (effect.type === "meteorStrike") {
+        const progress = 1 - alpha;
+        const px = effect.x * CELL;
+        const py = effect.y * CELL;
+        const impact = Math.min(1, progress * 1.8);
+        ctx.strokeStyle = `rgba(255, 72, 45, ${0.9 * alpha})`;
+        ctx.lineWidth = 4;
         ctx.beginPath();
-        ctx.arc(effect.x * CELL, effect.y * CELL, effect.radius * CELL, 0, Math.PI * 2);
+        ctx.arc(px, py, effect.blastRadius * CELL, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = `rgba(255, 72, 45, ${0.16 * alpha})`;
+        ctx.beginPath();
+        ctx.arc(px, py, effect.blastRadius * CELL * impact, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = `rgba(255, 220, 135, ${0.85 * alpha})`;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(px - 28, py + 28);
+        ctx.lineTo(px + 24 - progress * 90, py - 46 + progress * 90);
+        ctx.stroke();
+        ctx.fillStyle = `rgba(255, 190, 77, ${0.95 * alpha})`;
+        ctx.beginPath();
+        ctx.arc(px + 24 - progress * 90, py - 46 + progress * 90, 7 + impact * 7, 0, Math.PI * 2);
         ctx.fill();
       }
       if (effect.type === "knockback") {
@@ -1887,11 +1966,14 @@
     ui.knockback.textContent = state.cooldowns.knockback > 0 ? `넉백 ${state.cooldowns.knockback.toFixed(0)}s` : "넉백";
     if (!state.recruitHold || state.recruitHold.type !== "melee") ui.recruitMelee.textContent = "근접병 1명 10G";
     if (!state.recruitHold || state.recruitHold.type !== "archer") ui.recruitArcher.textContent = "궁수 1명 15G";
-    if (!state.recruitHold || state.recruitHold.type !== "catapult") ui.recruitCatapult.textContent = "투석기 1대 50G";
-    ui.recruitCatapult.disabled = state.gameOver;
+    if (!state.recruitHold || state.recruitHold.type !== "catapult") ui.recruitCatapult.textContent = `투석기 1대 80G (${unitCount("catapult")}/${MAX_CATAPULTS})`;
+    ui.recruitCatapult.disabled = state.gameOver || availableCatapultSlots() <= 0;
     ui.upgradeSoldiers.textContent = `병사 강화 ${40 + state.upgrades.soldiers * 22}G`;
     ui.upgradeTowers.textContent = `타워 강화 ${towerUpgradeCost()}G`;
     ui.upgradeWalls.textContent = `성벽 강화 ${60 + state.upgrades.walls * 40}G`;
+    ui.buildMode.disabled = state.waveActive || state.gameOver;
+    ui.productionMode.disabled = state.gameOver;
+    ui.upgradeMode.disabled = state.gameOver;
     document.querySelectorAll('[data-tool="wall"], [data-tool="gate"], [data-tool="tower"], [data-tool="meleeBarracks"], [data-tool="archerBarracks"], [data-tool="catapultWorkshop"]').forEach((button) => {
       button.disabled = state.waveActive || state.gameOver;
     });

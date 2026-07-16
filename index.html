@@ -3,69 +3,67 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Castle Break Prototype</title>
+    <title>Castle Defence Prototype</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <main class="shell">
       <section class="topbar" aria-label="게임 상태">
-        <div>
-          <strong>Castle Break</strong>
-          <span>브라우저 프로토타입</span>
+        <div class="brand">
+          <strong>Castle Defence</strong>
+          <span id="readout">선택: 없음</span>
         </div>
         <div class="stats">
-          <span id="gold">Gold 0</span>
-          <span id="wave">Wave 1</span>
-          <span id="enemies">Enemies 0</span>
+          <button id="startWave" class="primary-action top-action">웨이브 시작</button>
           <span id="core">Core 100%</span>
+          <span id="wave">Wave 1</span>
+          <span id="gold">Gold 0</span>
+          <span id="enemies">Enemies 0</span>
         </div>
       </section>
 
-      <section class="game-layout">
-        <aside class="panel" aria-label="건설과 명령">
-          <h1>공성 방어</h1>
-          <p class="hint">성벽을 세우고 부대와 타워로 코어를 지키세요.</p>
+      <section class="stage" aria-label="게임 화면">
+        <canvas id="game" width="768" height="528"></canvas>
+      </section>
 
-          <div class="button-grid" id="toolButtons">
-            <button data-tool="select" class="active">선택</button>
-            <button data-tool="wall">성벽 5G</button>
-            <button data-tool="gate">성문 15G</button>
-            <button data-tool="tower">화살탑 35G</button>
-            <button data-tool="meleeBarracks">근접 병영 30G</button>
-            <button data-tool="archerBarracks">궁수 병영 30G</button>
-            <button data-tool="catapultWorkshop">투석기 제작소 30G</button>
-            <button data-tool="erase">철거</button>
+      <section class="commandbar" aria-label="명령 패널">
+        <div class="control-strip">
+          <div class="mode-tabs" role="tablist" aria-label="명령 모드">
+            <button id="buildMode" class="mode-tab active" type="button">건설</button>
+            <button id="productionMode" class="mode-tab" type="button">생산</button>
+            <button id="upgradeMode" class="mode-tab" type="button">강화</button>
           </div>
 
-          <div class="actions">
-            <button id="startWave">웨이브 시작</button>
-            <button id="recruitMelee">근접병 1명 10G</button>
-            <button id="recruitArcher">궁수 1명 15G</button>
-            <button id="recruitCatapult">투석기 1대 50G</button>
+          <div class="hero-row" aria-label="영웅 필살기">
+            <span>필살기</span>
             <button id="meteor">메테오</button>
             <button id="knockback">넉백</button>
           </div>
+        </div>
 
-          <div class="actions">
-            <button id="upgradeSoldiers">병사 강화</button>
-            <button id="upgradeTowers">타워 강화</button>
-            <button id="upgradeWalls">성벽 강화</button>
-          </div>
+        <div class="command-row mode-panel build-panel active" id="buildPanel">
+          <button data-tool="wall" class="active">성벽 5G</button>
+          <button data-tool="gate">성문 15G</button>
+          <button data-tool="tower">화살탑 35G</button>
+          <button data-tool="meleeBarracks">근접 병영 30G</button>
+          <button data-tool="archerBarracks">궁수 병영 30G</button>
+          <button data-tool="catapultWorkshop">투석기 제작소 30G</button>
+          <button data-tool="erase">철거</button>
+        </div>
 
-          <div class="readout" id="readout">선택: 없음</div>
-          <ul class="tips">
-            <li>마법 버튼을 누른 뒤 맵을 클릭하면 시전됩니다.</li>
-            <li>부대를 클릭해 선택하고 땅을 클릭하면 이동합니다.</li>
-            <li>모집 버튼을 길게 누르면 10명 단위로 예약됩니다.</li>
-            <li>투석기는 돌을 날려 범위 피해를 줍니다.</li>
-            <li>몬스터가 길을 못 찾으면 성벽을 부수고 들어옵니다.</li>
-          </ul>
-        </aside>
+        <div class="command-row mode-panel production-panel" id="productionPanel" hidden>
+          <button id="recruitMelee">근접병 1명 10G</button>
+          <button id="recruitArcher">궁수 1명 15G</button>
+          <button id="recruitCatapult">투석기 1대 80G</button>
+        </div>
 
-        <section class="stage" aria-label="게임 화면">
-          <canvas id="game" width="768" height="528"></canvas>
-          <div class="status" id="status">건설 후 웨이브를 시작하세요.</div>
-        </section>
+        <div class="command-row mode-panel upgrade-panel" id="upgradePanel" hidden>
+          <button id="upgradeTowers">타워 강화</button>
+          <button id="upgradeWalls">성벽 강화</button>
+          <button id="upgradeSoldiers" hidden>병사 강화</button>
+        </div>
+
+        <div class="status" id="status">건설 후 웨이브를 시작하세요.</div>
       </section>
     </main>
 
