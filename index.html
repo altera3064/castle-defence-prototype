@@ -23,7 +23,17 @@
       </section>
 
       <section class="stage" aria-label="게임 화면">
-        <canvas id="game" width="768" height="528"></canvas>
+        <div class="game-surface">
+          <canvas id="game" width="1056" height="672"></canvas>
+          <div id="gameOverOverlay" class="game-over-overlay" role="alertdialog" aria-modal="true" aria-labelledby="gameOverTitle" hidden>
+            <div class="game-over-panel">
+              <span>CASTLE FALLEN</span>
+              <h1 id="gameOverTitle">임무 실패</h1>
+              <p>코어가 파괴되었습니다.</p>
+              <button id="retryGame" class="retry-button" type="button">Retry</button>
+            </div>
+          </div>
+        </div>
       </section>
 
       <section class="commandbar" aria-label="명령 패널">
@@ -43,7 +53,6 @@
 
         <div class="command-row mode-panel build-panel active" id="buildPanel">
           <button data-tool="wall" class="active">성벽 5G</button>
-          <button data-tool="gate">성문 15G</button>
           <button data-tool="tower">화살탑 35G</button>
           <button data-tool="meleeBarracks">근접 병영 30G</button>
           <button data-tool="archerBarracks">궁수 병영 30G</button>
@@ -67,6 +76,6 @@
       </section>
     </main>
 
-    <script src="src/game.js"></script>
+    <script src="src/game.js?v=wall-tile-individual"></script>
   </body>
 </html>

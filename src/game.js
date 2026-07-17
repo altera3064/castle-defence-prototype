@@ -3,6 +3,10 @@
 
   const canvas = document.getElementById("game");
   const ctx = canvas.getContext("2d");
+  const mapTexture = new Image();
+  mapTexture.src = "asset/%EB%A7%B5.png";
+  const mountainTexture = new Image();
+  mountainTexture.src = "asset/%EC%82%B0-%ED%88%AC%EB%AA%85.png";
   const ui = {
     gold: document.getElementById("gold"),
     wave: document.getElementById("wave"),
@@ -25,19 +29,29 @@
     buildPanel: document.getElementById("buildPanel"),
     productionPanel: document.getElementById("productionPanel"),
     upgradePanel: document.getElementById("upgradePanel"),
+    gameOverOverlay: document.getElementById("gameOverOverlay"),
+    retryGame: document.getElementById("retryGame"),
   };
 
-  const COLS = 32;
-  const ROWS = 22;
+  const COLS = 44;
+  const ROWS = 28;
   const CELL = 24;
-  const VALLEY_TOP = 5;
-  const VALLEY_BOTTOM = 16;
-  const CORE = { x: 6, y: 11, hp: 1200, maxHp: 1200 };
+  const VALLEY_TOP = 6;
+  const VALLEY_BOTTOM = 21;
+  const HUMAN_TERRITORY_END = 16;
+  const MOUNTAIN_LEFT = 17;
+  const MOUNTAIN_RIGHT = 28;
+  const MONSTER_TERRITORY_START = 35;
+  const WALL_BUILD_MIN_X = HUMAN_TERRITORY_END + 1;
+  const WALL_BUILD_MAX_X = MONSTER_TERRITORY_START - 8;
+  const WALL_BUILD_MIN_Y = VALLEY_TOP + 1;
+  const WALL_BUILD_MAX_Y = VALLEY_BOTTOM - 1;
+  const MONSTER_SPAWN_LINE_X = COLS - 3;
+  const CORE = { x: 8, y: 14, hp: 1200, maxHp: 1200 };
   const MAX_SQUAD_SIZE = 30;
   const MAX_CATAPULTS = 10;
   const costs = {
     wall: 5,
-    gate: 15,
     tower: 35,
     meleeBarracks: 30,
     archerBarracks: 30,
@@ -59,9 +73,9 @@
     tool: "wall",
     spellMode: null,
     draggingSquad: null,
+    dragStartPoint: null,
     wallDragActive: false,
     eraseDragActive: false,
-    lastWallCell: null,
     lastEraseCell: null,
     eraseVisitedCells: new Set(),
     pendingNormalizeTypes: new Set(),
@@ -111,6 +125,7 @@
   }
 
   function setup() {
+    ui.gameOverOverlay.hidden = true;
     state.grid = Array(COLS * ROWS).fill("empty");
     state.distances = Array(COLS * ROWS).fill(Infinity);
     buildTerrain();
@@ -127,7 +142,7 @@
   function buildTerrain() {
     for (let y = 0; y < ROWS; y += 1) {
       for (let x = 0; x < COLS; x += 1) {
-        const nearCenter = x >= 12 && x <= 20;
+        const nearCenter = x >= MOUNTAIN_LEFT && x <= MOUNTAIN_RIGHT;
         const topRidge = nearCenter && y <= VALLEY_TOP;
         const bottomRidge = nearCenter && y >= VALLEY_BOTTOM;
         if (topRidge || bottomRidge) {
@@ -138,17 +153,15 @@
   }
 
   function buildStartingKeep() {
-    for (let y = 6; y <= 15; y += 1) {
-      for (let x = 15; x <= 18; x += 1) {
-        placeStructure(x, y, "wall", false);
-      }
+    for (let y = 7; y <= 20; y += 1) {
+      placeStructure(22, y, "wall", false);
     }
-    placeStructure(10, 9, "meleeBarracks", false);
-    placeStructure(10, 13, "archerBarracks", false);
+    placeStructure(14, 11, "meleeBarracks", false);
+    placeStructure(14, 17, "archerBarracks", false);
     recruitUnit("melee", false);
     recruitUnit("archer", false);
-    placeStructure(15, 8, "tower", false);
-    placeStructure(15, 14, "tower", false);
+    placeStructure(22, 9, "tower", false);
+    placeStructure(22, 18, "tower", false);
     state.pathDirty = true;
   }
 
@@ -169,22 +182,22 @@
     ui.buildMode.addEventListener("click", () => setCommandMode("build"));
     ui.productionMode.addEventListener("click", () => setCommandMode("production"));
     ui.upgradeMode.addEventListener("click", () => setCommandMode("upgrade"));
+    ui.retryGame.addEventListener("click", retryGame);
 
     canvas.addEventListener("pointerdown", onPointerDown);
     canvas.addEventListener("pointermove", onPointerMove);
     canvas.addEventListener("pointerup", onPointerUp);
-    canvas.addEventListener("pointerleave", stopTileDrag);
+    canvas.addEventListener("pointerleave", cancelPointerDrag);
     canvas.addEventListener("contextmenu", (event) => event.preventDefault());
 
     window.addEventListener("keydown", (event) => {
       const keyTools = {
         "1": "select",
         "2": "wall",
-        "3": "gate",
-        "4": "tower",
-        "5": "meleeBarracks",
-        "6": "archerBarracks",
-        "7": "catapultWorkshop",
+        "3": "tower",
+        "4": "meleeBarracks",
+        "5": "archerBarracks",
+        "6": "catapultWorkshop",
         "8": "erase",
       };
       if (keyTools[event.key]) setTool(keyTools[event.key]);
@@ -282,7 +295,6 @@
     const labels = {
       select: "부대 선택 모드입니다.",
       wall: "성벽을 배치하세요.",
-      gate: "성문을 배치하세요.",
       tower: "화살탑을 배치하세요.",
       meleeBarracks: "근접 병영을 배치하세요.",
       archerBarracks: "궁수 병영을 배치하세요.",
@@ -305,7 +317,8 @@
 
   function onPointerDown(event) {
     if (state.gameOver) return;
-    const { x, y } = eventCell(event);
+    const point = eventPoint(event);
+    const { x, y } = { x: Math.floor(point.x), y: Math.floor(point.y) };
     if (!inBounds(x, y)) return;
 
     if (state.spellMode) {
@@ -314,11 +327,12 @@
       return;
     }
 
-    const squad = findSquadAt(x, y);
+    const squad = findSquadAt(x, y) || findSquadFlagAt(point.x, point.y);
     if (squad) {
       state.selectedSquad = squad;
       state.draggingSquad = squad;
       stopTileDrag();
+      state.dragStartPoint = point;
       updateReadout();
       return;
     }
@@ -334,7 +348,6 @@
     if (state.tool !== "select") {
       if (state.tool === "wall") {
         state.wallDragActive = true;
-        state.lastWallCell = { x, y };
       }
       placeStructure(x, y, state.tool, true);
       return;
@@ -349,8 +362,7 @@
     const { x, y } = eventCell(event);
     if (!inBounds(x, y)) return;
     if (state.wallDragActive && state.tool === "wall") {
-      drawWallLine(state.lastWallCell, { x, y });
-      state.lastWallCell = { x, y };
+      placeStructure(x, y, "wall", true);
     }
     if (state.eraseDragActive && state.tool === "erase") {
       eraseLine(state.lastEraseCell, { x, y });
@@ -364,34 +376,27 @@
       return;
     }
     if (state.gameOver || !state.draggingSquad) return;
-    const { x, y } = eventCell(event);
+    const point = eventPoint(event);
+    const { x, y } = { x: Math.floor(point.x), y: Math.floor(point.y) };
+    const movedFarEnough = state.dragStartPoint && Math.hypot(point.x - state.dragStartPoint.x, point.y - state.dragStartPoint.y) >= 0.4;
     state.selectedSquad = state.draggingSquad;
     state.draggingSquad = null;
-    commandSelectedSquad(x, y);
+    state.dragStartPoint = null;
+    if (movedFarEnough) commandSelectedSquad(x, y);
     updateReadout();
   }
 
   function stopTileDrag() {
     state.wallDragActive = false;
     state.eraseDragActive = false;
-    state.lastWallCell = null;
     state.lastEraseCell = null;
     state.eraseVisitedCells.clear();
   }
 
-  function drawWallLine(from, to) {
-    if (!from) {
-      placeStructure(to.x, to.y, "wall", true);
-      return;
-    }
-    const dx = to.x - from.x;
-    const dy = to.y - from.y;
-    const steps = Math.max(Math.abs(dx), Math.abs(dy), 1);
-    for (let i = 1; i <= steps; i += 1) {
-      const x = Math.round(from.x + (dx * i) / steps);
-      const y = Math.round(from.y + (dy * i) / steps);
-      placeStructure(x, y, "wall", true);
-    }
+  function cancelPointerDrag() {
+    stopTileDrag();
+    state.draggingSquad = null;
+    state.dragStartPoint = null;
   }
 
   function eraseLine(from, to) {
@@ -417,18 +422,30 @@
   }
 
   function eventCell(event) {
+    const point = eventPoint(event);
+    return { x: Math.floor(point.x), y: Math.floor(point.y) };
+  }
+
+  function eventPoint(event) {
     const rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
     const px = (event.clientX - rect.left) * scaleX;
     const py = (event.clientY - rect.top) * scaleY;
-    return { x: Math.floor(px / CELL), y: Math.floor(py / CELL) };
+    return { x: px / CELL, y: py / CELL };
   }
 
   function canPlace(x, y, type = "default") {
     const unitBlocksPlacement =
       type === "wall" ? hasNonArcherOnCell(x, y) : findSquadAt(x, y);
-    return inBounds(x, y) && state.grid[idx(x, y)] === "empty" && !unitBlocksPlacement;
+    const insideWallBuildZone =
+      type !== "wall" ||
+      (x >= WALL_BUILD_MIN_X && x <= WALL_BUILD_MAX_X && y >= WALL_BUILD_MIN_Y && y <= WALL_BUILD_MAX_Y);
+    return inBounds(x, y) && x < MONSTER_TERRITORY_START && insideWallBuildZone && state.grid[idx(x, y)] === "empty" && !unitBlocksPlacement;
+  }
+
+  function isMonsterTerritory(x) {
+    return x >= MONSTER_TERRITORY_START;
   }
 
   function hasNonArcherOnCell(x, y) {
@@ -436,11 +453,6 @@
   }
 
   function canPlaceTowerOnWall(x, y) {
-    const structure = state.structures.get(idx(x, y));
-    return !!structure && structure.type === "wall" && !structure.hasTower;
-  }
-
-  function canConvertWallToGate(x, y) {
     const structure = state.structures.get(idx(x, y));
     return !!structure && structure.type === "wall" && !structure.hasTower;
   }
@@ -507,8 +519,12 @@
   }
 
   function placeStructure(x, y, type, pay) {
-    if (pay && state.waveActive && (type === "wall" || type === "gate" || type === "tower" || type === "meleeBarracks" || type === "archerBarracks" || type === "catapultWorkshop")) {
+    if (pay && state.waveActive && (type === "wall" || type === "tower" || type === "meleeBarracks" || type === "archerBarracks" || type === "catapultWorkshop")) {
       setStatus("웨이브 중에는 방어 시설을 새로 지을 수 없습니다.");
+      return false;
+    }
+    if (isMonsterTerritory(x)) {
+      setStatus("몬스터 진영에는 건설할 수 없습니다.");
       return false;
     }
     if (type === "tower" && canPlaceTowerOnWall(x, y)) {
@@ -526,18 +542,6 @@
       setStatus("화살탑은 성벽 위에만 지을 수 있습니다.");
       return false;
     }
-    if (type === "gate" && canConvertWallToGate(x, y)) {
-      pushUnitsFromCell(x, y);
-      if (pay && !spend(costs.gate)) return false;
-      const wall = state.structures.get(idx(x, y));
-      wall.type = "gate";
-      wall.hp = Math.max(wall.hp, Math.round(260 * (1 + state.upgrades.walls * 0.25)));
-      wall.maxHp = Math.max(wall.maxHp, wall.hp);
-      state.grid[idx(x, y)] = "gate";
-      state.pathDirty = true;
-      setStatus("성벽을 성문으로 바꿨습니다.");
-      return true;
-    }
     if (!canPlace(x, y, type)) return false;
     if (pay && !spend(costs[type] || 0)) return false;
 
@@ -552,10 +556,6 @@
     };
     if (type === "wall") {
       data.hp = Math.round(180 * wallBonus);
-      data.maxHp = data.hp;
-    }
-    if (type === "gate") {
-      data.hp = Math.round(260 * wallBonus);
       data.maxHp = data.hp;
     }
     if (type === "tower") {
@@ -787,6 +787,14 @@
     );
   }
 
+  function findSquadFlagAt(x, y) {
+    return state.squads.find((squad) => {
+      const relativeX = x - squad.x;
+      const relativeY = y - squad.y;
+      return relativeX >= -0.35 && relativeX <= 0.95 && relativeY >= -1.15 && relativeY <= 0.45;
+    });
+  }
+
   function commandSelectedSquad(x, y) {
     if (!state.selectedSquad) return;
     if (!inBounds(x, y) || isBlockedForUnit(state.selectedSquad.type, x, y)) {
@@ -878,10 +886,9 @@
     if (!spend(cost)) return;
     state.upgrades.walls += 1;
     state.structures.forEach((structure) => {
-      if (structure.type === "wall" || structure.type === "gate") {
-        const gain = structure.type === "wall" ? 45 : 65;
-        structure.maxHp += gain;
-        structure.hp += gain;
+      if (structure.type === "wall") {
+        structure.maxHp += 45;
+        structure.hp += 45;
       }
     });
     setStatus(`성벽 강화 ${state.upgrades.walls}단계.`);
@@ -896,6 +903,10 @@
     setCommandMode("production");
     setStatus(`${state.wave} 웨이브 시작.`);
     updateUi();
+  }
+
+  function retryGame() {
+    window.location.reload();
   }
 
   function makeWave(wave) {
@@ -1007,7 +1018,7 @@
 
   function isBlockedForMonster(x, y) {
     const type = state.grid[idx(x, y)];
-    return type === "mountain" || type === "wall" || type === "gate" || type === "tower" || type === "meleeBarracks" || type === "archerBarracks" || type === "catapultWorkshop";
+    return type === "mountain" || type === "wall" || type === "tower" || type === "meleeBarracks" || type === "archerBarracks" || type === "catapultWorkshop";
   }
 
   function loop(now) {
@@ -1562,6 +1573,12 @@
       CORE.hp = 0;
       state.gameOver = true;
       state.won = false;
+      state.waveActive = false;
+      state.spawnQueue = [];
+      state.recruitHold = null;
+      state.spellMode = null;
+      cancelPointerDrag();
+      ui.gameOverOverlay.hidden = false;
       setStatus("패배: 코어가 파괴되었습니다.");
       return;
     }
@@ -1598,6 +1615,7 @@
 
     drawGround();
     drawStructures();
+    drawMountainCliffs();
     drawSquads();
     drawSquadFlags();
     drawMonsters();
@@ -1611,78 +1629,134 @@
   function drawGround() {
     ctx.fillStyle = "#1f2a24";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+    if (mapTexture.complete && mapTexture.naturalWidth > 0) {
+      ctx.drawImage(mapTexture, 0, 0, canvas.width, canvas.height);
+    }
+    const mountainTextureReady = mountainTexture.complete && mountainTexture.naturalWidth > 0;
     for (let y = 0; y < ROWS; y += 1) {
       for (let x = 0; x < COLS; x += 1) {
         const px = x * CELL;
         const py = y * CELL;
-        if (state.grid[idx(x, y)] === "mountain") {
-          ctx.fillStyle = "#32383b";
-          ctx.fillRect(px, py, CELL, CELL);
-          ctx.fillStyle = "rgba(255,255,255,0.06)";
-          ctx.beginPath();
-          ctx.moveTo(px + 4, py + CELL - 4);
-          ctx.lineTo(px + CELL / 2, py + 5);
-          ctx.lineTo(px + CELL - 4, py + CELL - 4);
-          ctx.fill();
+        const isMountain = state.grid[idx(x, y)] === "mountain";
+        if (isMountain) {
+          if (!mountainTextureReady) {
+            ctx.fillStyle = "#32383b";
+            ctx.fillRect(px, py, CELL, CELL);
+            ctx.fillStyle = "rgba(255,255,255,0.06)";
+            ctx.beginPath();
+            ctx.moveTo(px + 4, py + CELL - 4);
+            ctx.lineTo(px + CELL / 2, py + 5);
+            ctx.lineTo(px + CELL - 4, py + CELL - 4);
+            ctx.fill();
+          }
         } else {
-          ctx.fillStyle = x < 12 ? "#223128" : x > 23 ? "#2b232d" : "#243026";
-          ctx.fillRect(px, py, CELL, CELL);
+          if (x >= MONSTER_TERRITORY_START) {
+            ctx.fillStyle = "rgba(104, 45, 79, 0.055)";
+            ctx.fillRect(px, py, CELL, CELL);
+          }
         }
-        ctx.strokeStyle = "rgba(255,255,255,0.045)";
-        ctx.strokeRect(px, py, CELL, CELL);
+        if (!isMountain || !mountainTextureReady) {
+          ctx.strokeStyle = "rgba(28, 51, 30, 0.12)";
+          ctx.strokeRect(px, py, CELL, CELL);
+        }
       }
     }
-    ctx.fillStyle = "rgba(117,196,107,0.18)";
-    ctx.fillRect(0, VALLEY_TOP * CELL, 12 * CELL, (VALLEY_BOTTOM - VALLEY_TOP + 1) * CELL);
-    ctx.fillStyle = "rgba(189,90,222,0.14)";
-    ctx.fillRect(24 * CELL, VALLEY_TOP * CELL, 8 * CELL, (VALLEY_BOTTOM - VALLEY_TOP + 1) * CELL);
-    ctx.strokeStyle = "rgba(232,93,93,0.85)";
+    const territoryY = VALLEY_TOP * CELL;
+    const territoryHeight = (VALLEY_BOTTOM - VALLEY_TOP + 1) * CELL;
+    ctx.strokeStyle = "rgba(105, 196, 112, 0.84)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(1, territoryY + 1, (HUMAN_TERRITORY_END + 1) * CELL - 2, territoryHeight - 2);
+    const buildZoneLeft = WALL_BUILD_MIN_X;
+    const buildZoneTop = WALL_BUILD_MIN_Y;
+    const buildZoneWidth = WALL_BUILD_MAX_X - WALL_BUILD_MIN_X + 1;
+    const buildZoneHeight = WALL_BUILD_MAX_Y - WALL_BUILD_MIN_Y + 1;
+    ctx.strokeStyle = "rgba(84, 61, 28, 0.5)";
     ctx.lineWidth = 3;
+    ctx.strokeRect(buildZoneLeft * CELL, buildZoneTop * CELL, buildZoneWidth * CELL, buildZoneHeight * CELL);
+    ctx.strokeStyle = "rgba(222, 181, 91, 0.88)";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 4]);
+    ctx.strokeRect(buildZoneLeft * CELL, buildZoneTop * CELL, buildZoneWidth * CELL, buildZoneHeight * CELL);
+    ctx.setLineDash([]);
+    drawTerritoryLabel("인간 진영", 12, VALLEY_TOP * CELL + 18, "#d5ead0");
+    drawTerritoryLabel("몬스터 진영", (MONSTER_TERRITORY_START + 1) * CELL, VALLEY_TOP * CELL + 18, "#efd5df");
+  }
+
+  function drawMountainCliffs() {
+    if (!mountainTexture.complete || mountainTexture.naturalWidth === 0) return;
+    const height = canvas.height;
+    const width = height * (mountainTexture.naturalWidth / mountainTexture.naturalHeight);
+    const x = (canvas.width - width) / 2;
+    const originalOffset = Math.round(height * 0.12);
+    const topClipHeight = Math.round(height * 0.4);
+    const bottomClipY = Math.round(height * 0.6);
+
+    ctx.save();
     ctx.beginPath();
-    ctx.moveTo(23 * CELL, VALLEY_TOP * CELL);
-    ctx.lineTo(23 * CELL, (VALLEY_BOTTOM + 1) * CELL);
-    ctx.stroke();
-    ctx.strokeStyle = "rgba(189,90,222,0.9)";
+    ctx.rect(0, 0, canvas.width, topClipHeight);
+    ctx.clip();
+    ctx.drawImage(mountainTexture, x, -originalOffset + CELL - CELL, width, height);
+    ctx.restore();
+
+    ctx.save();
     ctx.beginPath();
-    ctx.moveTo(29 * CELL, 1 * CELL);
-    ctx.lineTo(29 * CELL, 21 * CELL);
+    ctx.rect(0, bottomClipY, canvas.width, height - bottomClipY);
+    ctx.clip();
+    ctx.drawImage(mountainTexture, x, originalOffset, width, height);
+    ctx.restore();
+  }
+
+  function drawTerritoryLabel(text, x, y, color) {
+    ctx.save();
+    ctx.font = "700 11px Arial, 'Noto Sans KR', sans-serif";
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(14, 28, 16, 0.48)";
+    ctx.strokeText(text, x, y);
+    ctx.fillStyle = color;
+    ctx.fillText(text, x, y);
+    const width = ctx.measureText(text).width;
+    ctx.strokeStyle = color;
+    ctx.globalAlpha = 0.68;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, y + 5);
+    ctx.lineTo(x + width, y + 5);
     ctx.stroke();
-    ctx.fillStyle = "rgba(238,242,246,0.55)";
-    ctx.font = "bold 12px Arial";
-    ctx.fillText("인간 진영", 12, VALLEY_TOP * CELL + 18);
-    ctx.fillText("몬스터 진영", 650, VALLEY_TOP * CELL + 18);
+    ctx.restore();
+  }
+
+  function drawStructureTopper(structure, px, py) {
+    if (structure.type === "tower" || structure.hasTower) {
+      ctx.fillStyle = "#9fc1ff";
+      ctx.fillRect(px + 8, py + 6, CELL - 16, CELL - 12);
+      if (structure.hasTower) {
+        drawHpBar(px + 5, py + 3, CELL - 10, structure.towerHp / structure.towerMaxHp);
+      }
+    }
   }
 
   function drawStructures() {
-    state.structures.forEach((structure) => {
+    const structures = Array.from(state.structures.values());
+    structures.forEach((structure) => {
       const px = structure.x * CELL;
       const py = structure.y * CELL;
       if (structure.type === "wall") ctx.fillStyle = "#77818c";
-      if (structure.type === "gate") ctx.fillStyle = "#a56b3f";
       if (structure.type === "tower") ctx.fillStyle = "#526e9b";
       if (structure.type === "meleeBarracks") ctx.fillStyle = "#4f8a4f";
       if (structure.type === "archerBarracks") ctx.fillStyle = "#4f7f9f";
       if (structure.type === "catapultWorkshop") ctx.fillStyle = "#9a8242";
       ctx.fillRect(px + 2, py + 2, CELL - 4, CELL - 4);
-      if (structure.type === "tower" || structure.hasTower) {
-        ctx.fillStyle = "#9fc1ff";
-        ctx.fillRect(px + 8, py + 6, CELL - 16, CELL - 12);
-        if (structure.hasTower) {
-          drawHpBar(px + 5, py + 3, CELL - 10, structure.towerHp / structure.towerMaxHp);
-        }
-      }
+      drawStructureTopper(structure, px, py);
       if (structure.type === "meleeBarracks" || structure.type === "archerBarracks" || structure.type === "catapultWorkshop") {
         ctx.fillStyle = "rgba(255,255,255,0.8)";
         ctx.fillRect(px + 6, py + 7, CELL - 12, CELL - 14);
         ctx.fillStyle = structure.type === "meleeBarracks" ? "#284f2b" : structure.type === "archerBarracks" ? "#28506a" : "#6a4a2c";
         ctx.fillRect(px + 9, py + 10, CELL - 18, CELL - 20);
       }
-      drawHpBar(px + 3, py + CELL - 6, CELL - 6, structure.hp / structure.maxHp);
+      if (structure.type !== "wall") {
+        drawHpBar(px + 3, py + CELL - 6, CELL - 6, structure.hp / structure.maxHp);
+      }
     });
-
-    ctx.fillStyle = "rgba(39, 173, 238, 0.72)";
-    ctx.font = "bold 13px Arial";
-    ctx.fillText("성벽", 388, 267);
 
     const coreX = CORE.x * CELL;
     const coreY = CORE.y * CELL;
@@ -1974,7 +2048,7 @@
     ui.buildMode.disabled = state.waveActive || state.gameOver;
     ui.productionMode.disabled = state.gameOver;
     ui.upgradeMode.disabled = state.gameOver;
-    document.querySelectorAll('[data-tool="wall"], [data-tool="gate"], [data-tool="tower"], [data-tool="meleeBarracks"], [data-tool="archerBarracks"], [data-tool="catapultWorkshop"]').forEach((button) => {
+    document.querySelectorAll('[data-tool="wall"], [data-tool="tower"], [data-tool="meleeBarracks"], [data-tool="archerBarracks"], [data-tool="catapultWorkshop"]').forEach((button) => {
       button.disabled = state.waveActive || state.gameOver;
     });
   }
