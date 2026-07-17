@@ -1743,7 +1743,7 @@
   }
 
   function drawWallTexture(x, y) {
-    const lift = 14;
+    const lift = 16;
     const sideBleed = 3;
     ctx.fillStyle = "#77818c";
     ctx.fillRect(x + 2, y + 2, CELL - 4, CELL - 4);
