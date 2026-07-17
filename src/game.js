@@ -1753,14 +1753,14 @@
 
   function drawStructures() {
     const structures = Array.from(state.structures.values());
-    structures.forEach((structure) => {
+    const walls = structures
+      .filter((structure) => structure.type === "wall")
+      .sort((a, b) => a.y - b.y || a.x - b.x);
+    const others = structures.filter((structure) => structure.type !== "wall");
+
+    others.forEach((structure) => {
       const px = structure.x * CELL;
       const py = structure.y * CELL;
-      if (structure.type === "wall") {
-        drawWallTexture(px, py);
-        drawStructureTopper(structure, px, py);
-        return;
-      }
       if (structure.type === "tower") ctx.fillStyle = "#526e9b";
       if (structure.type === "meleeBarracks") ctx.fillStyle = "#4f8a4f";
       if (structure.type === "archerBarracks") ctx.fillStyle = "#4f7f9f";
@@ -1773,9 +1773,14 @@
         ctx.fillStyle = structure.type === "meleeBarracks" ? "#284f2b" : structure.type === "archerBarracks" ? "#28506a" : "#6a4a2c";
         ctx.fillRect(px + 9, py + 10, CELL - 18, CELL - 20);
       }
-      if (structure.type !== "wall") {
-        drawHpBar(px + 3, py + CELL - 6, CELL - 6, structure.hp / structure.maxHp);
-      }
+      drawHpBar(px + 3, py + CELL - 6, CELL - 6, structure.hp / structure.maxHp);
+    });
+
+    walls.forEach((structure) => {
+      const px = structure.x * CELL;
+      const py = structure.y * CELL;
+      drawWallTexture(px, py);
+      drawStructureTopper(structure, px, py);
     });
 
     const coreX = CORE.x * CELL;
