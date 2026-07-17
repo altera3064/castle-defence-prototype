@@ -7,6 +7,8 @@
   mapTexture.src = "asset/%EB%A7%B5.png";
   const mountainTexture = new Image();
   mountainTexture.src = "asset/%EC%82%B0-%ED%88%AC%EB%AA%85.png";
+  const wallTexture = new Image();
+  wallTexture.src = "asset/wall-original-clean.png";
   const ui = {
     gold: document.getElementById("gold"),
     wave: document.getElementById("wave"),
@@ -1614,8 +1616,9 @@
     }
 
     drawGround();
+    drawMountainCliffs("top");
     drawStructures();
-    drawMountainCliffs();
+    drawMountainCliffs("bottom");
     drawSquads();
     drawSquadFlags();
     drawMonsters();
@@ -1682,7 +1685,7 @@
     drawTerritoryLabel("몬스터 진영", (MONSTER_TERRITORY_START + 1) * CELL, VALLEY_TOP * CELL + 18, "#efd5df");
   }
 
-  function drawMountainCliffs() {
+  function drawMountainCliffs(section = "both") {
     if (!mountainTexture.complete || mountainTexture.naturalWidth === 0) return;
     const height = canvas.height;
     const width = height * (mountainTexture.naturalWidth / mountainTexture.naturalHeight);
@@ -1691,19 +1694,23 @@
     const topClipHeight = Math.round(height * 0.4);
     const bottomClipY = Math.round(height * 0.6);
 
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(0, 0, canvas.width, topClipHeight);
-    ctx.clip();
-    ctx.drawImage(mountainTexture, x, -originalOffset + CELL - CELL, width, height);
-    ctx.restore();
+    if (section === "top" || section === "both") {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, canvas.width, topClipHeight);
+      ctx.clip();
+      ctx.drawImage(mountainTexture, x, -originalOffset + CELL - CELL, width, height);
+      ctx.restore();
+    }
 
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(0, bottomClipY, canvas.width, height - bottomClipY);
-    ctx.clip();
-    ctx.drawImage(mountainTexture, x, originalOffset, width, height);
-    ctx.restore();
+    if (section === "bottom" || section === "both") {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, bottomClipY, canvas.width, height - bottomClipY);
+      ctx.clip();
+      ctx.drawImage(mountainTexture, x, originalOffset, width, height);
+      ctx.restore();
+    }
   }
 
   function drawTerritoryLabel(text, x, y, color) {
@@ -1735,12 +1742,25 @@
     }
   }
 
+  function drawWallTexture(x, y) {
+    const lift = 14;
+    const sideBleed = 3;
+    ctx.fillStyle = "#77818c";
+    ctx.fillRect(x + 2, y + 2, CELL - 4, CELL - 4);
+    if (!wallTexture.complete || wallTexture.naturalWidth === 0) return;
+    ctx.drawImage(wallTexture, x - sideBleed, y - lift, CELL + sideBleed * 2, CELL + lift);
+  }
+
   function drawStructures() {
     const structures = Array.from(state.structures.values());
     structures.forEach((structure) => {
       const px = structure.x * CELL;
       const py = structure.y * CELL;
-      if (structure.type === "wall") ctx.fillStyle = "#77818c";
+      if (structure.type === "wall") {
+        drawWallTexture(px, py);
+        drawStructureTopper(structure, px, py);
+        return;
+      }
       if (structure.type === "tower") ctx.fillStyle = "#526e9b";
       if (structure.type === "meleeBarracks") ctx.fillStyle = "#4f8a4f";
       if (structure.type === "archerBarracks") ctx.fillStyle = "#4f7f9f";
