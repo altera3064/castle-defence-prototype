@@ -7,8 +7,56 @@
   mapTexture.src = "asset/%EB%A7%B5.png";
   const mountainTexture = new Image();
   mountainTexture.src = "asset/%EC%82%B0-%ED%88%AC%EB%AA%85.png";
-  const wallTexture = new Image();
-  wallTexture.src = "asset/wall-original-clean.png";
+  const WALL_MASK_TO_FILE = [
+    "1.png",
+    "11.png",
+    "10.png",
+    "5.png",
+    "8.png",
+    "7.png",
+    "4.png",
+    "12.png",
+    "9.png",
+    "3.png",
+    "6.png",
+    "13.png",
+    "2.png",
+    "14.png",
+    "15.png",
+    "16.png",
+  ];
+  const WALL_SPRITE_BASE = "asset/%EC%84%B1%EB%B2%BD%20%EC%97%90%EC%85%8B%20(1)/";
+  const WALL_SPRITE_SOURCE = { x: 94, y: 27, width: 325, height: 452 };
+  const WALL_SPRITE_RENDER = { lift: 16, sideBleed: 3, height: 40 };
+  const wallSprites = Array(16).fill(null);
+  const wallRawImages = Array(16).fill(null);
+  const UNIT_ANIMATION_STATES = ["idle", "walk", "attack", "hit", "death"];
+  const UNIT_FRAME_COUNT = 3;
+  const UNIT_ANIMATION_DURATIONS = {
+    idle: 0.72,
+    walk: 0.42,
+    attack: 0.3,
+    hit: 0.24,
+    death: 0.48,
+  };
+  const UNIT_SPRITE_SCALE = {
+    melee: 1.45,
+    archer: 0.95,
+    catapult: 1.45,
+    runner: 0.85,
+    bruiser: 1.0,
+    siege: 1.25,
+    boss: 2.35,
+  };
+  const UNIT_SPRITE_FILES = {
+    melee: "asset/units/%EA%B7%BC%EC%A0%91%EB%B3%91%20%EC%97%90%EC%85%8B/melee.png",
+  };
+  const unitSprites = {};
+  ["melee", "archer", "catapult", "runner", "bruiser", "siege", "boss"].forEach((type) => {
+    const image = new Image();
+    image.src = UNIT_SPRITE_FILES[type] || `asset/units/${type}.png`;
+    unitSprites[type] = image;
+  });
   const ui = {
     gold: document.getElementById("gold"),
     wave: document.getElementById("wave"),
@@ -52,6 +100,13 @@
   const CORE = { x: 8, y: 14, hp: 1200, maxHp: 1200 };
   const MAX_SQUAD_SIZE = 30;
   const MAX_CATAPULTS = 10;
+  const SOLDIER_WALK_SPEED_THRESHOLD = 0.18;
+  const WORLD_WIDTH = COLS * CELL;
+  const WORLD_HEIGHT = ROWS * CELL;
+  const MIN_CAMERA_ZOOM = 0.75;
+  const MAX_CAMERA_ZOOM = 2.25;
+  const BASE_CANVAS_WIDTH = 1056;
+  const BASE_CANVAS_HEIGHT = 672;
   const costs = {
     wall: 5,
     tower: 35,
@@ -74,6 +129,16 @@
     commandMode: "build",
     tool: "wall",
     spellMode: null,
+    camera: {
+      x: 0,
+      y: 0,
+      zoom: 1,
+      panning: false,
+      panStartX: 0,
+      panStartY: 0,
+      panCameraX: 0,
+      panCameraY: 0,
+    },
     draggingSquad: null,
     dragStartPoint: null,
     wallDragActive: false,
@@ -89,7 +154,9 @@
     monsters: [],
     projectiles: [],
     effects: [],
+    deathSprites: [],
     alerts: [],
+    hoveredWallKey: null,
     pathDirty: true,
     distances: [],
     upgrades: {
@@ -101,6 +168,7 @@
       meteor: 0,
       knockback: 0,
     },
+    renderScale: 1,
     shake: 0,
   };
 
@@ -126,7 +194,252 @@
     return Math.hypot(dx, dy);
   }
 
+  function resizeCanvasForDisplay() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const targetWidth = Math.round(BASE_CANVAS_WIDTH * dpr);
+    const targetHeight = Math.round(BASE_CANVAS_HEIGHT * dpr);
+    if (canvas.width !== targetWidth || canvas.height !== targetHeight || state.renderScale !== dpr) {
+      canvas.width = targetWidth;
+      canvas.height = targetHeight;
+      state.renderScale = dpr;
+    }
+  }
+
+  function logicalCanvasWidth() {
+    return canvas.width / state.renderScale;
+  }
+
+  function logicalCanvasHeight() {
+    return canvas.height / state.renderScale;
+  }
+
+  function wallAssetPath(fileName) {
+    return `${WALL_SPRITE_BASE}${encodeURIComponent(fileName)}`;
+  }
+
+  function makeTransparentWallSprite(image) {
+    const canvas = document.createElement("canvas");
+    canvas.width = image.naturalWidth;
+    canvas.height = image.naturalHeight;
+    const spriteCtx = canvas.getContext("2d");
+    spriteCtx.drawImage(image, 0, 0);
+    try {
+      const imageData = spriteCtx.getImageData(0, 0, canvas.width, canvas.height);
+      const data = imageData.data;
+      const width = canvas.width;
+      const height = canvas.height;
+      const visited = new Uint8Array(width * height);
+      const queue = [];
+      const isWhiteBackground = (x, y) => {
+        const i = (y * width + x) * 4;
+        return data[i + 3] > 0 && data[i] > 244 && data[i + 1] > 244 && data[i + 2] > 244;
+      };
+      const enqueue = (x, y) => {
+        if (x < 0 || y < 0 || x >= width || y >= height) return;
+        const key = y * width + x;
+        if (visited[key] || !isWhiteBackground(x, y)) return;
+        visited[key] = 1;
+        queue.push([x, y]);
+      };
+
+      for (let x = 0; x < width; x += 1) {
+        enqueue(x, 0);
+        enqueue(x, height - 1);
+      }
+      for (let y = 0; y < height; y += 1) {
+        enqueue(0, y);
+        enqueue(width - 1, y);
+      }
+      while (queue.length) {
+        const [x, y] = queue.pop();
+        data[(y * width + x) * 4 + 3] = 0;
+        enqueue(x + 1, y);
+        enqueue(x - 1, y);
+        enqueue(x, y + 1);
+        enqueue(x, y - 1);
+      }
+      spriteCtx.putImageData(imageData, 0, 0);
+    } catch (error) {
+      return image;
+    }
+    return canvas;
+  }
+
+  function loadWallSprites() {
+    WALL_MASK_TO_FILE.forEach((fileName, mask) => {
+      const image = new Image();
+      image.onload = () => {
+        wallSprites[mask] = makeTransparentWallSprite(image);
+      };
+      image.src = wallAssetPath(fileName);
+      wallRawImages[mask] = image;
+    });
+  }
+
+  function wallSpriteReady(sprite) {
+    if (sprite instanceof HTMLCanvasElement) return sprite.width > 0 && sprite.height > 0;
+    return Boolean(sprite?.complete && sprite.naturalWidth > 0 && sprite.naturalHeight > 0);
+  }
+
+  function hasWall(x, y) {
+    if (!inBounds(x, y)) return false;
+    return state.structures.get(idx(x, y))?.type === "wall";
+  }
+
+  function calculateWallMask(x, y) {
+    let mask = 0;
+    if (hasWall(x, y - 1)) mask |= 1;
+    if (hasWall(x + 1, y)) mask |= 2;
+    if (hasWall(x, y + 1)) mask |= 4;
+    if (hasWall(x - 1, y)) mask |= 8;
+    return mask;
+  }
+
+  function updateWallAppearance(x, y) {
+    const wall = state.structures.get(idx(x, y));
+    if (!wall || wall.type !== "wall") return;
+    const mask = calculateWallMask(x, y);
+    wall.connectionMask = mask;
+    wall.spriteIndex = mask;
+    wall.spriteFile = WALL_MASK_TO_FILE[mask];
+  }
+
+  function updateWallAndNeighbors(x, y) {
+    [
+      [x, y],
+      [x, y - 1],
+      [x + 1, y],
+      [x, y + 1],
+      [x - 1, y],
+    ].forEach(([px, py]) => {
+      if (hasWall(px, py)) updateWallAppearance(px, py);
+    });
+  }
+
+  function refreshAllWallAppearances() {
+    state.structures.forEach((structure) => {
+      if (structure.type === "wall") updateWallAppearance(structure.x, structure.y);
+    });
+  }
+
+  function wallDebugInfo(x, y) {
+    const wall = state.structures.get(idx(x, y));
+    if (!wall || wall.type !== "wall") return null;
+    const mask = typeof wall.connectionMask === "number" ? wall.connectionMask : calculateWallMask(x, y);
+    return {
+      x,
+      y,
+      north: Boolean(mask & 1),
+      east: Boolean(mask & 2),
+      south: Boolean(mask & 4),
+      west: Boolean(mask & 8),
+      mask,
+      sprite: wall.spriteFile || WALL_MASK_TO_FILE[mask],
+      index: mask,
+      pivot: "bottom-center",
+      renderWidth: CELL + WALL_SPRITE_RENDER.sideBleed * 2,
+      renderHeight: WALL_SPRITE_RENDER.height,
+    };
+  }
+
+  function runWallMaskSelfTest() {
+    const previousGrid = state.grid.slice();
+    const previousStructures = new Map(state.structures);
+    const baseX = WALL_BUILD_MIN_X + 1;
+    const baseY = WALL_BUILD_MIN_Y + 1;
+    const results = [];
+    const setWalls = (positions) => {
+      state.grid = previousGrid.slice();
+      state.structures = new Map(previousStructures);
+      positions.forEach(([x, y]) => {
+        const data = { type: "wall", x, y, hp: 180, maxHp: 180, cooldown: 0 };
+        state.grid[idx(x, y)] = "wall";
+        state.structures.set(idx(x, y), data);
+      });
+      refreshAllWallAppearances();
+    };
+    const assertMask = (name, positions, expected) => {
+      setWalls(positions.map(([x, y]) => [baseX + x, baseY + y]));
+      Object.entries(expected).forEach(([key, mask]) => {
+        const [x, y] = key.split(",").map(Number);
+        const actual = calculateWallMask(baseX + x, baseY + y);
+        results.push({ name, cell: key, expected: mask, actual, pass: actual === mask, sprite: WALL_MASK_TO_FILE[actual] });
+      });
+    };
+
+    assertMask("single", [[0, 0]], { "0,0": 0 });
+    assertMask("horizontal-2", [[0, 0], [1, 0]], { "0,0": 2, "1,0": 8 });
+    assertMask("vertical-2", [[0, 0], [0, 1]], { "0,0": 4, "0,1": 1 });
+    assertMask("corner", [[0, 0], [1, 0], [0, 1]], { "0,0": 6, "1,0": 8, "0,1": 1 });
+    assertMask("square-2x2", [[0, 0], [1, 0], [0, 1], [1, 1]], { "0,0": 6, "1,0": 12, "0,1": 3, "1,1": 9 });
+    assertMask("horizontal-3", [[0, 0], [1, 0], [2, 0]], { "0,0": 2, "1,0": 10, "2,0": 8 });
+    assertMask("cross", [[1, 0], [0, 1], [1, 1], [2, 1], [1, 2]], { "1,1": 15 });
+
+    setWalls([[0, 0], [1, 0], [0, 1], [1, 1]].map(([x, y]) => [baseX + x, baseY + y]));
+    removeStructure(baseX + 1, baseY + 1, false);
+    [
+      ["0,0", 6],
+      ["1,0", 8],
+      ["0,1", 1],
+    ].forEach(([key, mask]) => {
+      const [x, y] = key.split(",").map(Number);
+      const actual = calculateWallMask(baseX + x, baseY + y);
+      results.push({ name: "remove-from-2x2", cell: key, expected: mask, actual, pass: actual === mask, sprite: WALL_MASK_TO_FILE[actual] });
+    });
+
+    setWalls([[0, 0], [1, 0], [0, 1], [1, 1]].map(([x, y]) => [baseX + x, baseY + y]));
+    destroyStructure(state.structures.get(idx(baseX, baseY)));
+    [
+      ["1,0", 4],
+      ["0,1", 2],
+      ["1,1", 9],
+    ].forEach(([key, mask]) => {
+      const [x, y] = key.split(",").map(Number);
+      const actual = calculateWallMask(baseX + x, baseY + y);
+      results.push({ name: "destroy-from-2x2", cell: key, expected: mask, actual, pass: actual === mask, sprite: WALL_MASK_TO_FILE[actual] });
+    });
+
+    state.grid = previousGrid;
+    state.structures = previousStructures;
+    refreshAllWallAppearances();
+    return results;
+  }
+
+  function clampCamera() {
+    const camera = state.camera;
+    const viewWidth = logicalCanvasWidth();
+    const viewHeight = logicalCanvasHeight();
+    const scaledWidth = WORLD_WIDTH * camera.zoom;
+    const scaledHeight = WORLD_HEIGHT * camera.zoom;
+    if (scaledWidth <= viewWidth) {
+      camera.x = (viewWidth - scaledWidth) / 2;
+    } else {
+      camera.x = clamp(camera.x, viewWidth - scaledWidth, 0);
+    }
+    if (scaledHeight <= viewHeight) {
+      camera.y = (viewHeight - scaledHeight) / 2;
+    } else {
+      camera.y = clamp(camera.y, viewHeight - scaledHeight, 0);
+    }
+  }
+
+  function screenPoint(event) {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: ((event.clientX - rect.left) / rect.width) * logicalCanvasWidth(),
+      y: ((event.clientY - rect.top) / rect.height) * logicalCanvasHeight(),
+    };
+  }
+
+  function screenToWorld(point) {
+    return {
+      x: (point.x - state.camera.x) / state.camera.zoom,
+      y: (point.y - state.camera.y) / state.camera.zoom,
+    };
+  }
+
   function setup() {
+    loadWallSprites();
     ui.gameOverOverlay.hidden = true;
     state.grid = Array(COLS * ROWS).fill("empty");
     state.distances = Array(COLS * ROWS).fill(Infinity);
@@ -134,6 +447,7 @@
     state.grid[idx(CORE.x, CORE.y)] = "core";
 
     buildStartingKeep();
+    refreshAllWallAppearances();
     bindInput();
     setTool("wall");
     setCommandMode("build");
@@ -190,6 +504,7 @@
     canvas.addEventListener("pointermove", onPointerMove);
     canvas.addEventListener("pointerup", onPointerUp);
     canvas.addEventListener("pointerleave", cancelPointerDrag);
+    canvas.addEventListener("wheel", onCanvasWheel, { passive: false });
     canvas.addEventListener("contextmenu", (event) => event.preventDefault());
 
     window.addEventListener("keydown", (event) => {
@@ -319,9 +634,17 @@
 
   function onPointerDown(event) {
     if (state.gameOver) return;
+    if (event.button === 1 || event.button === 2) {
+      event.preventDefault();
+      startCameraPan(event);
+      return;
+    }
     const point = eventPoint(event);
     const { x, y } = { x: Math.floor(point.x), y: Math.floor(point.y) };
-    if (!inBounds(x, y)) return;
+    if (!inBounds(x, y)) {
+      if (!state.spellMode && state.tool === "select") startCameraPan(event);
+      return;
+    }
 
     if (state.spellMode) {
       castSpell(state.spellMode, x + 0.5, y + 0.5);
@@ -333,6 +656,7 @@
     if (squad) {
       state.selectedSquad = squad;
       state.draggingSquad = squad;
+      state.camera.panning = false;
       stopTileDrag();
       state.dragStartPoint = point;
       updateReadout();
@@ -340,6 +664,7 @@
     }
 
     if (state.tool === "erase") {
+      state.camera.panning = false;
       state.eraseDragActive = true;
       state.lastEraseCell = { x, y };
       state.eraseVisitedCells = new Set();
@@ -348,6 +673,7 @@
     }
 
     if (state.tool !== "select") {
+      state.camera.panning = false;
       if (state.tool === "wall") {
         state.wallDragActive = true;
       }
@@ -355,13 +681,19 @@
       return;
     }
 
+    startCameraPan(event);
     state.selectedSquad = null;
     updateReadout();
   }
 
   function onPointerMove(event) {
     if (state.gameOver) return;
+    if (state.camera.panning) {
+      updateCameraPan(event);
+      return;
+    }
     const { x, y } = eventCell(event);
+    updateHoveredWall(x, y);
     if (!inBounds(x, y)) return;
     if (state.wallDragActive && state.tool === "wall") {
       placeStructure(x, y, "wall", true);
@@ -373,6 +705,10 @@
   }
 
   function onPointerUp(event) {
+    if (state.camera.panning) {
+      finishCameraPan(event);
+      return;
+    }
     if (state.wallDragActive || state.eraseDragActive) {
       stopTileDrag();
       return;
@@ -397,8 +733,34 @@
 
   function cancelPointerDrag() {
     stopTileDrag();
+    state.camera.panning = false;
     state.draggingSquad = null;
     state.dragStartPoint = null;
+    state.hoveredWallKey = null;
+    updateReadout();
+  }
+
+  function startCameraPan(event) {
+    const point = screenPoint(event);
+    state.camera.panning = true;
+    state.camera.panStartX = point.x;
+    state.camera.panStartY = point.y;
+    state.camera.panCameraX = state.camera.x;
+    state.camera.panCameraY = state.camera.y;
+    canvas.setPointerCapture?.(event.pointerId);
+  }
+
+  function updateCameraPan(event) {
+    const point = screenPoint(event);
+    state.camera.x = state.camera.panCameraX + point.x - state.camera.panStartX;
+    state.camera.y = state.camera.panCameraY + point.y - state.camera.panStartY;
+    clampCamera();
+  }
+
+  function finishCameraPan(event) {
+    updateCameraPan(event);
+    state.camera.panning = false;
+    canvas.releasePointerCapture?.(event.pointerId);
   }
 
   function eraseLine(from, to) {
@@ -429,12 +791,27 @@
   }
 
   function eventPoint(event) {
-    const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
-    const px = (event.clientX - rect.left) * scaleX;
-    const py = (event.clientY - rect.top) * scaleY;
-    return { x: px / CELL, y: py / CELL };
+    const world = screenToWorld(screenPoint(event));
+    return { x: world.x / CELL, y: world.y / CELL };
+  }
+
+  function updateHoveredWall(x, y) {
+    const nextKey = inBounds(x, y) && hasWall(x, y) ? idx(x, y) : null;
+    if (state.hoveredWallKey === nextKey) return;
+    state.hoveredWallKey = nextKey;
+    updateReadout();
+  }
+
+  function onCanvasWheel(event) {
+    if (!event.ctrlKey) return;
+    event.preventDefault();
+    const point = screenPoint(event);
+    const before = screenToWorld(point);
+    const zoomFactor = event.deltaY < 0 ? 1.12 : 1 / 1.12;
+    state.camera.zoom = clamp(state.camera.zoom * zoomFactor, MIN_CAMERA_ZOOM, MAX_CAMERA_ZOOM);
+    state.camera.x = point.x - before.x * state.camera.zoom;
+    state.camera.y = point.y - before.y * state.camera.zoom;
+    clampCamera();
   }
 
   function canPlace(x, y, type = "default") {
@@ -571,6 +948,7 @@
 
     state.grid[idx(x, y)] = type;
     state.structures.set(idx(x, y), data);
+    if (type === "wall") updateWallAndNeighbors(x, y);
     state.pathDirty = true;
     return true;
   }
@@ -590,6 +968,7 @@
     const towerRefund = structure.hasTower ? costs.tower : 0;
     state.structures.delete(key);
     state.grid[key] = "empty";
+    if (structure.type === "wall") updateWallAndNeighbors(x, y);
     state.pathDirty = true;
     if (refund) state.gold += (costs[structure.type] || 0) + towerRefund;
     updateUi();
@@ -690,6 +1069,7 @@
         targetX: x + 0.5,
         targetY: y + 0.5,
         flowField: null,
+        movingToCommand: false,
         formationSize: 0,
         members: [],
       };
@@ -713,7 +1093,7 @@
   function createSoldier(type, x, y) {
     const level = state.upgrades.soldiers;
     const stats = {
-      melee: { hp: 170 + level * 34, damage: 10 + level * 2, range: 1.05, speed: 2.85, radius: 0.34, splash: 0 },
+      melee: { hp: 170 + level * 34, damage: 16 + level * 3, range: 1.05, speed: 2.85, radius: 0.34, splash: 0 },
       archer: { hp: 95 + level * 24, damage: 12 + level * 3, range: 5.4, speed: 2.8, radius: 0.24, splash: 0 },
       catapult: { hp: 240 + level * 35, damage: 42 + level * 6, range: 7.2, speed: 1.45, radius: 0.4, splash: 2.0 },
     }[type];
@@ -730,6 +1110,11 @@
       radius: stats.radius,
       splash: stats.splash,
       attackTimer: 0,
+      animState: "idle",
+      animTime: Math.random() * UNIT_ANIMATION_DURATIONS.idle,
+      attackAnimTimer: 0,
+      hitAnimTimer: 0,
+      facing: "right",
     };
   }
 
@@ -749,6 +1134,63 @@
     if (!army.members.length) return;
     army.x = army.members.reduce((sum, member) => sum + member.x, 0) / army.members.length;
     army.y = army.members.reduce((sum, member) => sum + member.y, 0) / army.members.length;
+  }
+
+  function squadAverageDistanceToCommand(squad) {
+    if (!squad.members.length) return 0;
+    const total = squad.members.reduce((sum, member) => {
+      return sum + Math.hypot(member.x - squad.targetX, member.y - squad.targetY);
+    }, 0);
+    return total / squad.members.length;
+  }
+
+  function setUnitAnimState(unit, stateName) {
+    if (unit.animState === stateName) return;
+    unit.animState = stateName;
+    unit.animTime = 0;
+  }
+
+  function updateUnitAnimTimers(unit, dt) {
+    unit.animTime += dt;
+    unit.attackAnimTimer = Math.max(0, (unit.attackAnimTimer || 0) - dt);
+    unit.hitAnimTimer = Math.max(0, (unit.hitAnimTimer || 0) - dt);
+  }
+
+  function triggerUnitAnim(unit, stateName) {
+    unit.animState = stateName;
+    unit.animTime = 0;
+    if (stateName === "attack") unit.attackAnimTimer = UNIT_ANIMATION_DURATIONS.attack;
+    if (stateName === "hit") unit.hitAnimTimer = UNIT_ANIMATION_DURATIONS.hit;
+  }
+
+  function setFacingFromDelta(unit, dx, dy) {
+    if (Math.abs(dx) < 0.015 && Math.abs(dy) < 0.015) return;
+    unit.facing = dx < 0 ? "left" : "right";
+  }
+
+  function damageUnit(unit, amount) {
+    unit.hp -= amount;
+    if (unit.hp > 0) triggerUnitAnim(unit, "hit");
+  }
+
+  function settleUnitCombatAnim(unit) {
+    if (unit.attackAnimTimer > 0) setUnitAnimState(unit, "attack");
+    else if (unit.hitAnimTimer > 0) setUnitAnimState(unit, "hit");
+    else setUnitAnimState(unit, "idle");
+  }
+
+  function addDeathSprite(unit) {
+    state.deathSprites.push({
+      type: unit.type,
+      x: unit.x,
+      y: unit.y,
+      radius: unit.radius,
+      facing: unit.facing || "right",
+      animState: "death",
+      animTime: 0,
+      life: UNIT_ANIMATION_DURATIONS.death,
+      maxLife: UNIT_ANIMATION_DURATIONS.death,
+    });
   }
 
   function normalizeSquads(type) {
@@ -774,6 +1216,7 @@
         targetX: x,
         targetY: y,
         flowField: null,
+        movingToCommand: false,
         formationSize: chunk.length,
         members: chunk,
       });
@@ -816,6 +1259,7 @@
     state.selectedSquad.targetX = x + 0.5;
     state.selectedSquad.targetY = y + 0.5;
     state.selectedSquad.flowField = flowField;
+    state.selectedSquad.movingToCommand = true;
     setStatus("부대 이동 명령.");
   }
 
@@ -952,6 +1396,11 @@
       attackTimer: 0,
       specialTimer: type === "boss" ? 2.2 + Math.random() * 1.8 : 0,
       slow: 0,
+      animState: "walk",
+      animTime: Math.random() * UNIT_ANIMATION_DURATIONS.walk,
+      attackAnimTimer: 0,
+      hitAnimTimer: 0,
+      facing: "left",
     });
   }
 
@@ -979,7 +1428,7 @@
           const force = (4.2 - d) / 4.2;
           monster.x += (dx / d) * force * 2.8;
           monster.y += (dy / d) * force * 2.8;
-          monster.hp -= 25;
+          damageUnit(monster, 25);
           monster.slow = Math.max(monster.slow, 1.4);
         }
       });
@@ -1047,6 +1496,7 @@
       checkEndConditions();
     }
     updateEffects(dt);
+    updateDeathSprites(dt);
     state.shake = Math.max(0, state.shake - dt);
     updateUi();
   }
@@ -1067,20 +1517,42 @@
 
   function updateSquads(dt) {
     state.squads.forEach((squad) => {
+      const squadDistanceToCommand = Math.hypot(squad.x - squad.targetX, squad.y - squad.targetY);
+      const averageDistanceToCommand = squadAverageDistanceToCommand(squad);
+      if (squad.movingToCommand && (squadDistanceToCommand <= 0.75 || averageDistanceToCommand <= 1.15)) {
+        squad.movingToCommand = false;
+        squad.flowField = null;
+      }
       squad.members.forEach((member, index) => {
         member.attackTimer -= dt;
+        updateUnitAnimTimers(member, dt);
         const slot = member.slot ?? index;
         const formationSize = squad.formationSize || squad.members.length;
         const offset = formationOffset(slot, formationSize);
-        const target = soldierMoveTarget(squad, member, offset);
+        const target = squad.movingToCommand ? soldierMoveTarget(squad, member, offset) : { x: member.x, y: member.y };
+        const beforeX = member.x;
+        const beforeY = member.y;
         const moving = moveSoldier(member, target, dt);
+        const moveDx = member.x - beforeX;
+        const moveDy = member.y - beforeY;
+        const actualSpeed = Math.hypot(moveDx, moveDy) / Math.max(dt, 0.001);
         const distanceToFormation = Math.hypot(target.x - member.x, target.y - member.y);
+        const commandDx = target.x - beforeX;
+        const commandDy = target.y - beforeY;
+        const walking = Boolean(squad.movingToCommand) && moving && actualSpeed >= SOLDIER_WALK_SPEED_THRESHOLD && Math.hypot(commandDx, commandDy) > 0.18;
+        if (walking) setFacingFromDelta(member, commandDx, commandDy);
+        else member.facing = "right";
+        const baseAnimState = walking ? "walk" : "idle";
 
         const monster = nearestMonster(member.x, member.y, member.range);
-        const rangedMoving = moving && distanceToFormation > 0.35 && (member.type === "archer" || member.type === "catapult");
-        if (monster && member.attackTimer <= 0 && !rangedMoving) {
+        const cannotAttackWhileMoving = walking && distanceToFormation > 0.18;
+        if (monster && member.attackTimer <= 0 && !cannotAttackWhileMoving) {
+          if (!walking) setFacingFromDelta(member, monster.x - member.x, monster.y - member.y);
           attackMonsterWithSoldier(member, monster);
         }
+        if (member.attackAnimTimer > 0 && !walking) setUnitAnimState(member, "attack");
+        else if (member.hitAnimTimer > 0) setUnitAnimState(member, "hit");
+        else setUnitAnimState(member, baseAnimState);
       });
       updateArmyCenter(squad);
     });
@@ -1116,6 +1588,7 @@
 
   function attackMonsterWithSoldier(member, target) {
     member.attackTimer = member.type === "catapult" ? 2.1 : member.type === "melee" ? 0.55 : 0.8;
+    triggerUnitAnim(member, "attack");
     if (member.type === "catapult") {
       state.projectiles.push({
         type: "stone",
@@ -1132,7 +1605,7 @@
       });
       return;
     }
-    target.hp -= member.damage * Math.max(0.35, member.hp / member.maxHp);
+    damageUnit(target, member.damage * Math.max(0.35, member.hp / member.maxHp));
     state.effects.push({ type: member.type === "archer" ? "arrow" : "slash", x: member.x, y: member.y, tx: target.x, ty: target.y, life: 0.12, maxLife: 0.12 });
   }
 
@@ -1153,7 +1626,7 @@
       const d = Math.hypot(monster.x - projectile.tx, monster.y - projectile.ty);
       if (d > projectile.splash) return;
       const falloff = Math.max(0.35, 1 - d / projectile.splash);
-      monster.hp -= projectile.damage * 2.4 * falloff;
+      damageUnit(monster, projectile.damage * 2.4 * falloff);
     });
     state.effects.push({ type: "stoneImpact", x: projectile.tx, y: projectile.ty, radius: projectile.splash, life: 0.38, maxLife: 0.38 });
   }
@@ -1165,6 +1638,8 @@
   function moveSoldier(member, target, dt) {
     const d = Math.hypot(target.x - member.x, target.y - member.y);
     if (d <= 0.04) return false;
+    const oldX = member.x;
+    const oldY = member.y;
     const step = Math.min(d, member.speed * dt);
     const nx = member.x + ((target.x - member.x) / d) * step;
     const ny = member.y + ((target.y - member.y) / d) * step;
@@ -1172,11 +1647,11 @@
     if (!isPointBlockedForUnit(member.type, nx, ny)) {
       member.x = nx;
       member.y = ny;
-      return true;
+      return Math.hypot(member.x - oldX, member.y - oldY) > 0.003;
     }
     if (!isPointBlockedForUnit(member.type, nx, member.y)) member.x = nx;
     if (!isPointBlockedForUnit(member.type, member.x, ny)) member.y = ny;
-    return true;
+    return Math.hypot(member.x - oldX, member.y - oldY) > 0.003;
   }
 
   function resolveSoldierCollisions(members) {
@@ -1238,7 +1713,7 @@
       const target = nearestMonster(tower.x + 0.5, tower.y + 0.5, 6.4);
       if (target && tower.cooldown <= 0) {
         tower.cooldown = Math.max(0.5, 0.85 - state.upgrades.towers * 0.025);
-        target.hp -= 24 + state.upgrades.towers * 4;
+        damageUnit(target, 24 + state.upgrades.towers * 4);
         target.towerAggroKey = idx(tower.x, tower.y);
         target.towerAggroTimer = Math.max(target.towerAggroTimer || 0, 4.2);
         state.effects.push({ type: "bolt", x: tower.x + 0.5, y: tower.y + 0.5, tx: target.x, ty: target.y, life: 0.1, maxLife: 0.1 });
@@ -1249,6 +1724,7 @@
   function updateMonsters(dt) {
     state.monsters.forEach((monster) => {
       if (monster.hp <= 0) return;
+      updateUnitAnimTimers(monster, dt);
       monster.attackTimer -= dt;
       if (monster.type === "boss") {
         monster.specialTimer -= dt;
@@ -1275,6 +1751,7 @@
       if (dist(monster, { x: CORE.x + 0.5, y: CORE.y + 0.5 }) < 0.75) {
         if (monster.attackTimer <= 0) {
           monster.attackTimer = 0.65;
+          triggerUnitAnim(monster, "attack");
           CORE.hp -= monster.damage;
           state.shake = 0.08;
         }
@@ -1287,28 +1764,38 @@
         return;
       }
 
-      moveMonster(monster, dt);
+      const moved = moveMonster(monster, dt);
+      if (monster.attackAnimTimer > 0) setUnitAnimState(monster, "attack");
+      else if (monster.hitAnimTimer > 0) setUnitAnimState(monster, "hit");
+      else setUnitAnimState(monster, moved ? "walk" : "idle");
     });
   }
 
   function attackSquad(monster, squad) {
-    if (monster.attackTimer > 0) return;
+    if (monster.attackTimer > 0) {
+      settleUnitCombatAnim(monster);
+      return;
+    }
     monster.attackTimer = monster.type === "boss" ? 1.25 : monster.type === "siege" ? 0.95 : 0.72;
+    setFacingFromDelta(monster, squad.x - monster.x, squad.y - monster.y);
+    triggerUnitAnim(monster, "attack");
     const armor = squad.type === "melee" ? (monster.type === "boss" ? 0.9 : 0.78) : 1;
-    squad.hp -= monster.damage * armor;
+    damageUnit(squad, monster.damage * armor);
     state.effects.push({ type: "hit", x: squad.x, y: squad.y, life: 0.15, maxLife: 0.15 });
   }
 
   function castBossLightning(monster) {
     const target = nearestSoldier(monster.x, monster.y, 8.5) || nearestStructurePoint(monster.x, monster.y, 8.5);
     if (!target) return false;
+    setFacingFromDelta(monster, target.x - monster.x, target.y - monster.y);
+    triggerUnitAnim(monster, "attack");
     const splashRadius = monster.splashRadius || 2.0;
     getAllSoldiers().forEach((member) => {
       const d = Math.hypot(member.x - target.x, member.y - target.y);
       if (d > splashRadius) return;
       const armor = member.type === "melee" ? 0.9 : 1;
       const falloff = Math.max(0.6, 1 - d / (splashRadius * 1.45));
-      member.hp -= monster.damage * 1.45 * armor * falloff;
+      damageUnit(member, monster.damage * 1.45 * armor * falloff);
     });
     state.structures.forEach((structure) => {
       const sx = structure.x + 0.5;
@@ -1351,8 +1838,13 @@
   }
 
   function attackStructure(monster, structure) {
-    if (monster.attackTimer > 0) return;
+    if (monster.attackTimer > 0) {
+      settleUnitCombatAnim(monster);
+      return;
+    }
     monster.attackTimer = monster.type === "boss" ? 1.25 : monster.type === "siege" ? 0.75 : 1.0;
+    setFacingFromDelta(monster, structure.x + 0.5 - monster.x, structure.y + 0.5 - monster.y);
+    triggerUnitAnim(monster, "attack");
     const damage = monster.damage * (monster.type === "boss" ? 1.25 : monster.type === "siege" ? 1.45 : 1);
     if (structure.hasTower) {
       structure.towerHp = (structure.towerHp || 115) - damage;
@@ -1380,6 +1872,7 @@
   function destroyStructure(structure) {
     state.structures.delete(idx(structure.x, structure.y));
     state.grid[idx(structure.x, structure.y)] = "empty";
+    if (structure.type === "wall") updateWallAndNeighbors(structure.x, structure.y);
     state.pathDirty = true;
     state.shake = 0.18;
     state.effects.push({ type: "break", x: structure.x + 0.5, y: structure.y + 0.5, life: 0.7, maxLife: 0.7 });
@@ -1406,16 +1899,20 @@
       const blocked = state.structures.get(idx(nextCell.x, nextCell.y));
       if (blocked) {
         attackStructure(monster, blocked);
-        return;
+        return false;
       }
     }
 
     const d = Math.hypot(target.x - monster.x, target.y - monster.y);
-    if (d <= 0.01) return;
+    if (d <= 0.01) return false;
     const speed = monster.speed * (monster.slow > 0 ? 0.45 : 1);
     const amount = Math.min(d, speed * dt);
+    const oldX = monster.x;
+    const oldY = monster.y;
     monster.x += ((target.x - monster.x) / d) * amount;
     monster.y += ((target.y - monster.y) / d) * amount;
+    setFacingFromDelta(monster, monster.x - oldX, monster.y - oldY);
+    return amount > 0.01;
   }
 
   function bestStep(monster) {
@@ -1538,6 +2035,7 @@
     state.monsters = state.monsters.filter((monster) => {
       if (monster.hp > 0) return true;
       state.gold += monster.gold;
+      addDeathSprite(monster);
       state.effects.push({ type: "gold", x: monster.x, y: monster.y, life: 0.55, maxLife: 0.55 });
       return false;
     });
@@ -1548,6 +2046,7 @@
       const beforeMembers = squad.members.length;
       squad.members = squad.members.filter((member) => {
         if (member.hp > 0) return true;
+        addDeathSprite(member);
         state.effects.push({ type: "break", x: member.x, y: member.y, life: 0.7, maxLife: 0.7 });
         return false;
       });
@@ -1608,12 +2107,29 @@
     state.alerts = state.alerts.filter((alert) => alert.life > 0);
   }
 
+  function updateDeathSprites(dt) {
+    state.deathSprites.forEach((sprite) => {
+      sprite.life -= dt;
+      sprite.animTime += dt;
+    });
+    state.deathSprites = state.deathSprites.filter((sprite) => sprite.life > 0);
+  }
+
   function render() {
+    resizeCanvasForDisplay();
+    const viewWidth = logicalCanvasWidth();
+    const viewHeight = logicalCanvasHeight();
+    ctx.setTransform(state.renderScale, 0, 0, state.renderScale, 0, 0);
+    ctx.clearRect(0, 0, viewWidth, viewHeight);
+    ctx.fillStyle = "#111722";
+    ctx.fillRect(0, 0, viewWidth, viewHeight);
+    clampCamera();
     ctx.save();
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (state.shake > 0) {
       ctx.translate((Math.random() - 0.5) * state.shake * 18, (Math.random() - 0.5) * state.shake * 18);
     }
+    ctx.translate(state.camera.x, state.camera.y);
+    ctx.scale(state.camera.zoom, state.camera.zoom);
 
     drawGround();
     drawMountainCliffs("top");
@@ -1622,18 +2138,22 @@
     drawSquads();
     drawSquadFlags();
     drawMonsters();
+    drawDeathSprites();
     drawProjectiles();
     drawEffects();
     drawSelection();
-    drawAlerts();
     ctx.restore();
+    drawAlerts();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
   }
 
   function drawGround() {
+    const viewWidth = logicalCanvasWidth();
+    const viewHeight = logicalCanvasHeight();
     ctx.fillStyle = "#1f2a24";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillRect(0, 0, viewWidth, viewHeight);
     if (mapTexture.complete && mapTexture.naturalWidth > 0) {
-      ctx.drawImage(mapTexture, 0, 0, canvas.width, canvas.height);
+      ctx.drawImage(mapTexture, 0, 0, viewWidth, viewHeight);
     }
     const mountainTextureReady = mountainTexture.complete && mountainTexture.naturalWidth > 0;
     for (let y = 0; y < ROWS; y += 1) {
@@ -1687,9 +2207,10 @@
 
   function drawMountainCliffs(section = "both") {
     if (!mountainTexture.complete || mountainTexture.naturalWidth === 0) return;
-    const height = canvas.height;
+    const height = logicalCanvasHeight();
+    const viewWidth = logicalCanvasWidth();
     const width = height * (mountainTexture.naturalWidth / mountainTexture.naturalHeight);
-    const x = (canvas.width - width) / 2;
+    const x = (viewWidth - width) / 2;
     const originalOffset = Math.round(height * 0.12);
     const topClipHeight = Math.round(height * 0.4);
     const bottomClipY = Math.round(height * 0.6);
@@ -1697,7 +2218,7 @@
     if (section === "top" || section === "both") {
       ctx.save();
       ctx.beginPath();
-      ctx.rect(0, 0, canvas.width, topClipHeight);
+      ctx.rect(0, 0, viewWidth, topClipHeight);
       ctx.clip();
       ctx.drawImage(mountainTexture, x, -originalOffset + CELL - CELL, width, height);
       ctx.restore();
@@ -1706,7 +2227,7 @@
     if (section === "bottom" || section === "both") {
       ctx.save();
       ctx.beginPath();
-      ctx.rect(0, bottomClipY, canvas.width, height - bottomClipY);
+      ctx.rect(0, bottomClipY, viewWidth, height - bottomClipY);
       ctx.clip();
       ctx.drawImage(mountainTexture, x, originalOffset, width, height);
       ctx.restore();
@@ -1742,13 +2263,25 @@
     }
   }
 
-  function drawWallTexture(x, y) {
-    const lift = 16;
-    const sideBleed = 3;
-    ctx.fillStyle = "#77818c";
-    ctx.fillRect(x + 2, y + 2, CELL - 4, CELL - 4);
-    if (!wallTexture.complete || wallTexture.naturalWidth === 0) return;
-    ctx.drawImage(wallTexture, x - sideBleed, y - lift, CELL + sideBleed * 2, CELL + lift);
+  function drawWallSprite(structure, x, y) {
+    const mask = typeof structure.connectionMask === "number" ? structure.connectionMask : calculateWallMask(structure.x, structure.y);
+    const sprite = wallSprites[mask];
+    const lift = WALL_SPRITE_RENDER.lift;
+    const sideBleed = WALL_SPRITE_RENDER.sideBleed;
+    const drawWidth = CELL + sideBleed * 2;
+    const drawHeight = WALL_SPRITE_RENDER.height;
+    if (!wallSpriteReady(sprite)) return;
+    ctx.drawImage(
+      sprite,
+      WALL_SPRITE_SOURCE.x,
+      WALL_SPRITE_SOURCE.y,
+      WALL_SPRITE_SOURCE.width,
+      WALL_SPRITE_SOURCE.height,
+      x - sideBleed,
+      y - lift,
+      drawWidth,
+      drawHeight
+    );
   }
 
   function drawStructures() {
@@ -1779,7 +2312,11 @@
     walls.forEach((structure) => {
       const px = structure.x * CELL;
       const py = structure.y * CELL;
-      drawWallTexture(px, py);
+      drawWallSprite(structure, px, py);
+    });
+    walls.forEach((structure) => {
+      const px = structure.x * CELL;
+      const py = structure.y * CELL;
       drawStructureTopper(structure, px, py);
     });
 
@@ -1792,24 +2329,91 @@
     drawHpBar(coreX + 2, coreY + CELL - 6, CELL - 4, CORE.hp / CORE.maxHp);
   }
 
+  function spriteReady(type) {
+    const image = unitSprites[type];
+    return image?.complete && image.naturalWidth > 0 && image.naturalHeight > 0;
+  }
+
+  function spriteFrameIndex(unit, stateName) {
+    const duration = UNIT_ANIMATION_DURATIONS[stateName] || UNIT_ANIMATION_DURATIONS.idle;
+    const step = duration / UNIT_FRAME_COUNT;
+    if (stateName === "idle" || stateName === "walk") {
+      return Math.floor(unit.animTime / step) % UNIT_FRAME_COUNT;
+    }
+    return clamp(Math.floor(unit.animTime / step), 0, UNIT_FRAME_COUNT - 1);
+  }
+
+  function drawUnitSprite(unit, px, py) {
+    if (!spriteReady(unit.type)) return false;
+
+    const image = unitSprites[unit.type];
+    const stateName = UNIT_ANIMATION_STATES.includes(unit.animState) ? unit.animState : "idle";
+    const stateIndex = UNIT_ANIMATION_STATES.indexOf(stateName);
+    const frameIndex = spriteFrameIndex(unit, stateName);
+    const frameWidth = image.naturalWidth / UNIT_FRAME_COUNT;
+    const frameHeight = image.naturalHeight / UNIT_ANIMATION_STATES.length;
+    const sourceX = frameWidth * frameIndex;
+    const sourceY = frameHeight * stateIndex;
+    const scale = UNIT_SPRITE_SCALE[unit.type] || 1;
+    const drawWidth = CELL * scale;
+    const drawHeight = CELL * scale;
+    const footY = py + unit.radius * CELL * 0.85;
+
+    ctx.save();
+    if (unit.facing === "right") {
+      ctx.translate(px, footY);
+      ctx.scale(-1, 1);
+      ctx.drawImage(image, sourceX, sourceY, frameWidth, frameHeight, -drawWidth / 2, -drawHeight, drawWidth, drawHeight);
+    } else {
+      ctx.drawImage(image, sourceX, sourceY, frameWidth, frameHeight, px - drawWidth / 2, footY - drawHeight, drawWidth, drawHeight);
+    }
+    ctx.restore();
+    return true;
+  }
+
+  function drawFallbackSoldier(member, px, py) {
+    if (member.type === "catapult") {
+      ctx.fillStyle = "#b9a05b";
+      ctx.fillRect(px - member.radius * CELL, py - member.radius * CELL * 0.7, member.radius * CELL * 2, member.radius * CELL * 1.4);
+      ctx.fillStyle = "#6a4a2c";
+      ctx.fillRect(px + 2, py - 4, member.radius * CELL, 8);
+      return;
+    }
+    ctx.fillStyle = member.type === "melee" ? "#75c46b" : "#7ec7e8";
+    ctx.beginPath();
+    ctx.arc(px, py, member.radius * CELL, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = member.type === "melee" ? "#284f2b" : "#28506a";
+    ctx.fillRect(px - 3, py - 3, 6, 6);
+  }
+
+  function drawFallbackMonster(monster, px, py) {
+    ctx.fillStyle = monster.type === "boss" ? "#5a223f" : monster.type === "siege" ? "#c24747" : monster.type === "bruiser" ? "#d27a52" : "#bd5ade";
+    ctx.beginPath();
+    ctx.arc(px, py, monster.radius * CELL, 0, Math.PI * 2);
+    ctx.fill();
+    if (monster.type === "boss") {
+      ctx.strokeStyle = "#ffcf66";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(px, py, monster.radius * CELL + 4, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = "#ffcf66";
+      ctx.fillRect(px - 5, py - 5, 10, 10);
+    }
+    if (monster.type === "siege") {
+      ctx.strokeStyle = "#241316";
+      ctx.lineWidth = 3;
+      ctx.strokeRect(px - 9, py - 7, 18, 14);
+    }
+  }
+
   function drawSquads() {
     state.squads.forEach((squad) => {
       squad.members.forEach((member) => {
         const px = member.x * CELL;
         const py = member.y * CELL;
-        if (member.type === "catapult") {
-          ctx.fillStyle = "#b9a05b";
-          ctx.fillRect(px - member.radius * CELL, py - member.radius * CELL * 0.7, member.radius * CELL * 2, member.radius * CELL * 1.4);
-          ctx.fillStyle = "#6a4a2c";
-          ctx.fillRect(px + 2, py - 4, member.radius * CELL, 8);
-        } else {
-          ctx.fillStyle = member.type === "melee" ? "#75c46b" : "#7ec7e8";
-          ctx.beginPath();
-          ctx.arc(px, py, member.radius * CELL, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.fillStyle = member.type === "melee" ? "#284f2b" : "#28506a";
-          ctx.fillRect(px - 3, py - 3, 6, 6);
-        }
+        if (!drawUnitSprite(member, px, py)) drawFallbackSoldier(member, px, py);
         drawHpBar(px - 8, py + 8, 16, member.hp / member.maxHp);
       });
     });
@@ -1819,26 +2423,25 @@
     state.monsters.forEach((monster) => {
       const px = monster.x * CELL;
       const py = monster.y * CELL;
-      ctx.fillStyle = monster.type === "boss" ? "#5a223f" : monster.type === "siege" ? "#c24747" : monster.type === "bruiser" ? "#d27a52" : "#bd5ade";
-      ctx.beginPath();
-      ctx.arc(px, py, monster.radius * CELL, 0, Math.PI * 2);
-      ctx.fill();
-      if (monster.type === "boss") {
-        ctx.strokeStyle = "#ffcf66";
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.arc(px, py, monster.radius * CELL + 4, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.fillStyle = "#ffcf66";
-        ctx.fillRect(px - 5, py - 5, 10, 10);
-      }
-      if (monster.type === "siege") {
-        ctx.strokeStyle = "#241316";
-        ctx.lineWidth = 3;
-        ctx.strokeRect(px - 9, py - 7, 18, 14);
-      }
+      if (!drawUnitSprite(monster, px, py)) drawFallbackMonster(monster, px, py);
       const hpWidth = monster.type === "boss" ? 42 : 18;
       drawHpBar(px - hpWidth / 2, py - monster.radius * CELL - 8, hpWidth, monster.hp / monster.maxHp);
+    });
+  }
+
+  function drawDeathSprites() {
+    state.deathSprites.forEach((sprite) => {
+      const px = sprite.x * CELL;
+      const py = sprite.y * CELL;
+      if (drawUnitSprite(sprite, px, py)) return;
+      ctx.save();
+      ctx.globalAlpha = clamp(sprite.life / sprite.maxLife, 0, 1) * 0.65;
+      if (sprite.type === "runner" || sprite.type === "bruiser" || sprite.type === "siege" || sprite.type === "boss") {
+        drawFallbackMonster(sprite, px, py);
+      } else {
+        drawFallbackSoldier(sprite, px, py);
+      }
+      ctx.restore();
     });
   }
 
@@ -2086,6 +2689,14 @@
       ui.readout.textContent = `${label} | 인원 ${state.selectedSquad.members.length} | 체력 ${Math.ceil(totalHp)}/${maxHp}`;
       return;
     }
+    if (state.hoveredWallKey !== null) {
+      const wall = state.structures.get(state.hoveredWallKey);
+      if (wall?.type === "wall") {
+        const mask = typeof wall.connectionMask === "number" ? wall.connectionMask : calculateWallMask(wall.x, wall.y);
+        ui.readout.textContent = `Wall (${wall.x}, ${wall.y}) | N=${!!(mask & 1)} E=${!!(mask & 2)} S=${!!(mask & 4)} W=${!!(mask & 8)} | Mask=${mask} | Sprite=${wall.spriteFile || WALL_MASK_TO_FILE[mask]} | Index=${mask} | Pivot=bottom-center | Size=${CELL + WALL_SPRITE_RENDER.sideBleed * 2}x${WALL_SPRITE_RENDER.height}`;
+        return;
+      }
+    }
     ui.readout.textContent = "선택: 없음";
   }
 
@@ -2093,5 +2704,15 @@
     ui.status.textContent = message;
   }
 
+  window.castleDebug = {
+    wallDebugInfo,
+    runWallMaskSelfTest,
+    refreshAllWallAppearances,
+  };
+
   setup();
+  document.documentElement.dataset.wallDebugReady = "true";
+  if (new URLSearchParams(window.location.search).has("wallTest")) {
+    document.documentElement.dataset.wallMaskSelfTest = JSON.stringify(runWallMaskSelfTest());
+  }
 })();

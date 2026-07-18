@@ -152,8 +152,12 @@ canvas {
   border: 1px solid #485566;
   border-radius: 6px;
   background: #1e2723;
-  image-rendering: pixelated;
+  cursor: grab;
   touch-action: none;
+}
+
+canvas:active {
+  cursor: grabbing;
 }
 
 .game-over-overlay {
