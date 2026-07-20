@@ -3,6 +3,9 @@
 
   const canvas = document.getElementById("game");
   const ctx = canvas.getContext("2d");
+  const queryParams = new URLSearchParams(window.location.search);
+  const DEBUG_MODE = queryParams.has("debug");
+  const WALL_TEST_MODE = queryParams.has("wallTest");
   const mapTexture = new Image();
   mapTexture.src = "asset/%EB%A7%B5.png";
   const mountainTexture = new Image();
@@ -41,8 +44,7 @@
   };
   const UNIT_SPRITE_SCALE = {
     melee: 1.45,
-    archer: 0.95,
-    catapult: 1.45,
+    archer: 1.45,
     runner: 0.85,
     bruiser: 1.0,
     siege: 1.25,
@@ -50,13 +52,21 @@
   };
   const UNIT_SPRITE_FILES = {
     melee: "asset/units/%EA%B7%BC%EC%A0%91%EB%B3%91%20%EC%97%90%EC%85%8B/melee.png",
+    archer: "asset/units/%EA%B6%81%EC%88%98%20%EC%97%90%EC%85%8B/%EA%B6%81%EC%88%98%20%EC%95%A0%EB%8B%88%EB%A9%94%EC%9D%B4%EC%85%98.png",
   };
   const unitSprites = {};
-  ["melee", "archer", "catapult", "runner", "bruiser", "siege", "boss"].forEach((type) => {
+  ["melee", "archer", "runner", "bruiser", "siege", "boss"].forEach((type) => {
     const image = new Image();
+    if (type === "archer") {
+      image.onload = () => {
+        unitSprites[type] = normalizeFourRowUnitSpriteSheet(image);
+      };
+    }
     image.src = UNIT_SPRITE_FILES[type] || `asset/units/${type}.png`;
     unitSprites[type] = image;
   });
+  const arrowSprite = new Image();
+  arrowSprite.src = "asset/units/%EA%B6%81%EC%88%98%20%EC%97%90%EC%85%8B/%ED%99%94%EC%82%B4.png";
   const ui = {
     gold: document.getElementById("gold"),
     wave: document.getElementById("wave"),
@@ -263,6 +273,106 @@
       return image;
     }
     return canvas;
+  }
+
+  function normalizeFourRowUnitSpriteSheet(image, options = {}) {
+    const {
+      contentWidthRatio = 0.9,
+      contentHeightRatio = 0.86,
+    } = options;
+    return normalizeUnitSpriteSheet(image, 4, [0, 1, 2, 0, 3], contentWidthRatio, contentHeightRatio);
+  }
+
+  function normalizeUnitSpriteSheet(image, sourceRows, sourceRowsByTargetState, contentWidthRatio, contentHeightRatio) {
+    const source = document.createElement("canvas");
+    source.width = image.naturalWidth;
+    source.height = image.naturalHeight;
+    const sourceCtx = source.getContext("2d");
+    sourceCtx.drawImage(image, 0, 0);
+    removeNearBlackBackground(source);
+    const sourceFrameWidth = source.width / UNIT_FRAME_COUNT;
+    const sourceFrameHeight = source.height / sourceRows;
+    const frameSize = Math.ceil(sourceFrameWidth);
+    const canvas = document.createElement("canvas");
+    canvas.width = frameSize * UNIT_FRAME_COUNT;
+    canvas.height = frameSize * UNIT_ANIMATION_STATES.length;
+    const spriteCtx = canvas.getContext("2d");
+    sourceRowsByTargetState.forEach((sourceRow, targetRow) => {
+      for (let frame = 0; frame < UNIT_FRAME_COUNT; frame += 1) {
+        const sx = Math.round(frame * sourceFrameWidth);
+        const sy = Math.round(sourceRow * sourceFrameHeight);
+        const sw = Math.round((frame + 1) * sourceFrameWidth) - sx;
+        const sh = Math.round((sourceRow + 1) * sourceFrameHeight) - sy;
+        const bounds = spriteFrameBounds(source, sx, sy, sw, sh);
+        const targetX = frame * frameSize;
+        const targetY = targetRow * frameSize;
+        if (!bounds) {
+          continue;
+        }
+        const targetContentWidth = frameSize * contentWidthRatio;
+        const targetContentHeight = frameSize * contentHeightRatio;
+        const fitScale = Math.min(targetContentWidth / bounds.width, targetContentHeight / bounds.height);
+        const drawWidth = bounds.width * fitScale;
+        const drawHeight = bounds.height * fitScale;
+        const dx = targetX + frameSize / 2 - drawWidth / 2;
+        const dy = targetY + frameSize * 0.9 - drawHeight;
+        spriteCtx.drawImage(
+          source,
+          bounds.x,
+          bounds.y,
+          bounds.width,
+          bounds.height,
+          dx,
+          dy,
+          drawWidth,
+          drawHeight
+        );
+      }
+    });
+    return canvas;
+  }
+
+  function removeNearBlackBackground(canvas) {
+    const sourceCtx = canvas.getContext("2d");
+    let imageData;
+    try {
+      imageData = sourceCtx.getImageData(0, 0, canvas.width, canvas.height);
+    } catch (error) {
+      return;
+    }
+    const data = imageData.data;
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i] <= 10 && data[i + 1] <= 10 && data[i + 2] <= 10) {
+        data[i + 3] = 0;
+      }
+    }
+    sourceCtx.putImageData(imageData, 0, 0);
+  }
+
+  function spriteFrameBounds(source, sx, sy, sw, sh) {
+    const sourceCtx = source.getContext("2d");
+    let imageData;
+    try {
+      imageData = sourceCtx.getImageData(sx, sy, sw, sh);
+    } catch (error) {
+      return null;
+    }
+    const data = imageData.data;
+    let minX = sw;
+    let minY = sh;
+    let maxX = -1;
+    let maxY = -1;
+    for (let y = 0; y < sh; y += 1) {
+      for (let x = 0; x < sw; x += 1) {
+        if (data[(y * sw + x) * 4 + 3] <= 20) continue;
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+      }
+    }
+    if (maxX < minX || maxY < minY) return null;
+    return { x: sx + minX, y: sy + minY, width: maxX - minX + 1, height: maxY - minY + 1 };
   }
 
   function loadWallSprites() {
@@ -692,7 +802,8 @@
       updateCameraPan(event);
       return;
     }
-    const { x, y } = eventCell(event);
+    const point = eventPoint(event);
+    const { x, y } = { x: Math.floor(point.x), y: Math.floor(point.y) };
     updateHoveredWall(x, y);
     if (!inBounds(x, y)) return;
     if (state.wallDragActive && state.tool === "wall") {
@@ -816,7 +927,7 @@
 
   function canPlace(x, y, type = "default") {
     const unitBlocksPlacement =
-      type === "wall" ? hasNonArcherOnCell(x, y) : findSquadAt(x, y);
+      type === "wall" ? false : findSquadAt(x, y);
     const insideWallBuildZone =
       type !== "wall" ||
       (x >= WALL_BUILD_MIN_X && x <= WALL_BUILD_MAX_X && y >= WALL_BUILD_MIN_Y && y <= WALL_BUILD_MAX_Y);
@@ -877,14 +988,17 @@
       { x: 1, y: -1 },
       { x: 1, y: 1 },
     ];
-    for (let radius = 1; radius <= 4; radius += 1) {
+    let fallback = null;
+    for (let radius = 1; radius <= 8; radius += 1) {
       for (let i = 0; i < directions.length; i += 1) {
         const dir = directions[(i + offsetIndex) % directions.length];
         const cell = { x: x + dir.x * radius, y: y + dir.y * radius };
-        if (canStand(cell.x, cell.y) && !findSquadAt(cell.x, cell.y)) return cell;
+        if (!canStand(cell.x, cell.y)) continue;
+        if (!fallback) fallback = cell;
+        if (!findSquadAt(cell.x, cell.y)) return cell;
       }
     }
-    return null;
+    return fallback;
   }
 
   function spend(amount) {
@@ -923,6 +1037,7 @@
     }
     if (!canPlace(x, y, type)) return false;
     if (pay && !spend(costs[type] || 0)) return false;
+    if (type === "wall") pushUnitsFromCell(x, y);
 
     const wallBonus = 1 + state.upgrades.walls * 0.25;
     const data = {
@@ -1069,6 +1184,8 @@
         targetX: x + 0.5,
         targetY: y + 0.5,
         flowField: null,
+        formationSlots: null,
+        forceMoveCommand: false,
         movingToCommand: false,
         formationSize: 0,
         members: [],
@@ -1094,8 +1211,8 @@
     const level = state.upgrades.soldiers;
     const stats = {
       melee: { hp: 170 + level * 34, damage: 16 + level * 3, range: 1.05, speed: 2.85, radius: 0.34, splash: 0 },
-      archer: { hp: 95 + level * 24, damage: 12 + level * 3, range: 5.4, speed: 2.8, radius: 0.24, splash: 0 },
-      catapult: { hp: 240 + level * 35, damage: 42 + level * 6, range: 7.2, speed: 1.45, radius: 0.4, splash: 2.0 },
+      archer: { hp: 95 + level * 24, damage: 12 + level * 3, range: 5.4, speed: 2.8, radius: 0.3, splash: 0 },
+      catapult: { hp: 240 + level * 35, damage: 42 + level * 6, range: 7.2, speed: 1.45, radius: 1.0, splash: 2.0 },
     }[type];
     return {
       id: Math.random().toString(36).slice(2),
@@ -1114,20 +1231,43 @@
       animTime: Math.random() * UNIT_ANIMATION_DURATIONS.idle,
       attackAnimTimer: 0,
       hitAnimTimer: 0,
+      commandHold: false,
+      commandStuckTime: 0,
       facing: "right",
     };
   }
 
   function formationOffset(index, total) {
+    const slot = formationSlotLocal(index, total);
+    return { x: slot.x, y: slot.y };
+  }
+
+  function formationDimensions(total) {
+    const rows = Math.ceil(Math.sqrt(total));
+    const cols = Math.ceil(total / rows);
+    return { cols, rows };
+  }
+
+  function formationSlotLocal(index, total) {
     if (total <= 1) return { x: 0, y: 0 };
-    const cols = Math.ceil(Math.sqrt(total));
+    const { cols, rows } = formationDimensions(total);
     const row = Math.floor(index / cols);
     const col = index % cols;
-    const rows = Math.ceil(total / cols);
     return {
-      x: (col - (cols - 1) / 2) * 0.72,
-      y: (row - (rows - 1) / 2) * 0.72,
+      x: col - Math.floor((cols - 1) / 2),
+      y: row - Math.floor((rows - 1) / 2),
     };
+  }
+
+  function formationSlotCells(squad, centerX, centerY) {
+    const total = squad.formationSize || squad.members.length;
+    return squad.members.map((member, index) => {
+      const local = formationSlotLocal(member.slot ?? index, total);
+      return {
+        x: centerX + local.x,
+        y: centerY + local.y,
+      };
+    });
   }
 
   function updateArmyCenter(army) {
@@ -1216,6 +1356,8 @@
         targetX: x,
         targetY: y,
         flowField: null,
+        formationSlots: null,
+        forceMoveCommand: false,
         movingToCommand: false,
         formationSize: chunk.length,
         members: chunk,
@@ -1242,25 +1384,78 @@
 
   function commandSelectedSquad(x, y) {
     if (!state.selectedSquad) return;
-    if (!inBounds(x, y) || isBlockedForUnit(state.selectedSquad.type, x, y)) {
+    const squad = state.selectedSquad;
+    const formationCenter = findFormationCenter(squad, x, y);
+    if (!formationCenter) {
       setStatus("부대가 이동할 수 없는 위치입니다.");
       return;
     }
-    const flowField = buildUnitFlowField(state.selectedSquad.type, x, y);
-    const reachable = state.selectedSquad.members.some((member) => {
+    squad.targetX = formationCenter.x + 0.5;
+    squad.targetY = formationCenter.y + 0.5;
+    squad.flowField = formationCenter.flowField;
+    squad.formationSlots = formationCenter.slots;
+    squad.forceMoveCommand = true;
+    squad.members.forEach((member) => {
+      member.commandHold = false;
+      member.commandStuckTime = 0;
+      member.attackAnimTimer = 0;
+      member.attackTimer = 0;
+    });
+    squad.movingToCommand = true;
+    setStatus("부대 이동 명령.");
+  }
+
+  function findFormationCenter(squad, goalX, goalY) {
+    if (!inBounds(goalX, goalY)) return null;
+    let best = null;
+    let bestScore = -Infinity;
+    for (let radius = 0; radius <= 9; radius += 1) {
+      for (let y = goalY - radius; y <= goalY + radius; y += 1) {
+        for (let x = goalX - radius; x <= goalX + radius; x += 1) {
+          if (Math.max(Math.abs(x - goalX), Math.abs(y - goalY)) !== radius) continue;
+          if (!inBounds(x, y)) continue;
+          const slots = formationSlotCells(squad, x, y);
+          const fit = formationFitScore(squad, slots);
+          if (fit < formationRequiredSlots(squad)) continue;
+          const flowField = buildFormationFlowField(squad.type, slots);
+          if (!squadCanReachFlowField(squad, flowField)) continue;
+          const goalDistance = Math.hypot(x - goalX, y - goalY);
+          const squadDistance = Math.hypot(x + 0.5 - squad.x, y + 0.5 - squad.y);
+          const score = fit * 1000 - goalDistance * 80 - squadDistance;
+          if (score > bestScore) {
+            bestScore = score;
+            best = { x, y, slots, flowField };
+          }
+        }
+      }
+      if (best && radius >= 1) return best;
+    }
+    return best;
+  }
+
+  function formationFitScore(squad, slots) {
+    let openSlots = 0;
+    slots.forEach((slot, index) => {
+      const member = squad.members[index];
+      if (!member || !inBounds(slot.x, slot.y)) return;
+      if (!isBlockedForUnit(member.type, slot.x, slot.y)) openSlots += 1;
+    });
+    return openSlots;
+  }
+
+  function formationRequiredSlots(squad) {
+    if (squad.type === "catapult") return 1;
+    return squad.members.length;
+  }
+
+  function squadCanReachFlowField(squad, flowField) {
+    let reachable = 0;
+    squad.members.forEach((member) => {
       const memberX = clamp(Math.floor(member.x), 0, COLS - 1);
       const memberY = clamp(Math.floor(member.y), 0, ROWS - 1);
-      return flowField[idx(memberX, memberY)] < Infinity;
+      if (flowField[idx(memberX, memberY)] < Infinity) reachable += 1;
     });
-    if (!reachable) {
-      setStatus("부대가 갈 수 있는 길이 없습니다.");
-      return;
-    }
-    state.selectedSquad.targetX = x + 0.5;
-    state.selectedSquad.targetY = y + 0.5;
-    state.selectedSquad.flowField = flowField;
-    state.selectedSquad.movingToCommand = true;
-    setStatus("부대 이동 명령.");
+    return reachable >= Math.max(1, Math.ceil(squad.members.length * 0.5));
   }
 
   function isBlockedForSquad(x, y) {
@@ -1279,6 +1474,32 @@
         const key = idx(next.x, next.y);
         if (distances[key] <= currentDistance + 1) return;
         if (key !== idx(goalX, goalY) && isBlockedForUnit(unitType, next.x, next.y)) return;
+        distances[key] = currentDistance + 1;
+        queue.push(next);
+      });
+    }
+
+    return distances;
+  }
+
+  function buildFormationFlowField(unitType, slots) {
+    const distances = Array(COLS * ROWS).fill(Infinity);
+    const queue = [];
+    slots.forEach((slot) => {
+      if (!inBounds(slot.x, slot.y)) return;
+      const key = idx(slot.x, slot.y);
+      if (distances[key] === 0) return;
+      distances[key] = 0;
+      queue.push({ x: slot.x, y: slot.y });
+    });
+
+    for (let head = 0; head < queue.length; head += 1) {
+      const current = queue[head];
+      const currentDistance = distances[idx(current.x, current.y)];
+      neighbors(current.x, current.y).forEach((next) => {
+        const key = idx(next.x, next.y);
+        if (distances[key] <= currentDistance + 1) return;
+        if (isBlockedForUnit(unitType, next.x, next.y)) return;
         distances[key] = currentDistance + 1;
         queue.push(next);
       });
@@ -1517,19 +1738,27 @@
 
   function updateSquads(dt) {
     state.squads.forEach((squad) => {
-      const squadDistanceToCommand = Math.hypot(squad.x - squad.targetX, squad.y - squad.targetY);
-      const averageDistanceToCommand = squadAverageDistanceToCommand(squad);
-      if (squad.movingToCommand && (squadDistanceToCommand <= 0.75 || averageDistanceToCommand <= 1.15)) {
+      if (squad.movingToCommand && squadShouldBreakFormationForCombat(squad)) {
         squad.movingToCommand = false;
         squad.flowField = null;
+        squad.formationSlots = null;
+        squad.forceMoveCommand = false;
+      }
+      if (squad.movingToCommand && squadReachedCommand(squad)) {
+        squad.movingToCommand = false;
+        squad.flowField = null;
+        squad.formationSlots = null;
+        squad.forceMoveCommand = false;
       }
       squad.members.forEach((member, index) => {
         member.attackTimer -= dt;
         updateUnitAnimTimers(member, dt);
-        const slot = member.slot ?? index;
-        const formationSize = squad.formationSize || squad.members.length;
-        const offset = formationOffset(slot, formationSize);
-        const target = squad.movingToCommand ? soldierMoveTarget(squad, member, offset) : { x: member.x, y: member.y };
+        const meleeEngageMonster = !squad.movingToCommand && member.type === "melee" ? nearestMonster(member.x, member.y, meleeEngageRange(member)) : null;
+        const target = squad.movingToCommand
+          ? soldierMoveTarget(squad, member, index)
+          : meleeEngageMonster
+            ? meleeEngageMoveTarget(member, meleeEngageMonster)
+            : { x: member.x, y: member.y };
         const beforeX = member.x;
         const beforeY = member.y;
         const moving = moveSoldier(member, target, dt);
@@ -1537,20 +1766,31 @@
         const moveDy = member.y - beforeY;
         const actualSpeed = Math.hypot(moveDx, moveDy) / Math.max(dt, 0.001);
         const distanceToFormation = Math.hypot(target.x - member.x, target.y - member.y);
+        updateCommandStuckState(squad, member, actualSpeed, distanceToFormation, dt);
         const commandDx = target.x - beforeX;
         const commandDy = target.y - beforeY;
-        const walking = Boolean(squad.movingToCommand) && moving && actualSpeed >= SOLDIER_WALK_SPEED_THRESHOLD && Math.hypot(commandDx, commandDy) > 0.18;
-        if (walking) setFacingFromDelta(member, commandDx, commandDy);
-        else member.facing = "right";
+        const movingForCommandOrEngage = Boolean(squad.movingToCommand || meleeEngageMonster);
+        const walking =
+          !member.commandHold &&
+          movingForCommandOrEngage &&
+          moving &&
+          actualSpeed >= unitWalkSpeedThreshold(member) &&
+          Math.hypot(commandDx, commandDy) > unitWalkDistanceThreshold(member);
         const baseAnimState = walking ? "walk" : "idle";
 
         const monster = nearestMonster(member.x, member.y, member.range);
-        const cannotAttackWhileMoving = walking && distanceToFormation > 0.18;
-        if (monster && member.attackTimer <= 0 && !cannotAttackWhileMoving) {
+        if (walking) setFacingFromDelta(member, commandDx, commandDy);
+        else if (monster) setFacingFromDelta(member, monster.x - member.x, monster.y - member.y);
+        else member.facing = "right";
+        const meleeHasReachedAttackRange =
+          member.type === "melee" && monster && Math.hypot(monster.x - member.x, monster.y - member.y) <= member.range + 0.08;
+        const cannotAttackWhileMoving = walking && distanceToFormation > 0.18 && !meleeHasReachedAttackRange;
+        const suppressAttackForMoveCommand = squad.movingToCommand && squad.forceMoveCommand && !combatPriorityActive();
+        if (monster && member.attackTimer <= 0 && !cannotAttackWhileMoving && !suppressAttackForMoveCommand) {
           if (!walking) setFacingFromDelta(member, monster.x - member.x, monster.y - member.y);
           attackMonsterWithSoldier(member, monster);
         }
-        if (member.attackAnimTimer > 0 && !walking) setUnitAnimState(member, "attack");
+        if (member.attackAnimTimer > 0 && !walking && !suppressAttackForMoveCommand) setUnitAnimState(member, "attack");
         else if (member.hitAnimTimer > 0) setUnitAnimState(member, "hit");
         else setUnitAnimState(member, baseAnimState);
       });
@@ -1560,8 +1800,53 @@
     state.squads.forEach(updateArmyCenter);
   }
 
-  function soldierMoveTarget(squad, member, offset) {
-    const desiredFormation = { x: squad.targetX + offset.x, y: squad.targetY + offset.y };
+  function squadShouldBreakFormationForCombat(squad) {
+    if (squad.type === "catapult") return false;
+    if (squad.forceMoveCommand && !combatPriorityActive()) return false;
+    return squad.members.some((member) => {
+      if (member.hp <= 0) return false;
+      const range = member.type === "melee" ? meleeEngageRange(member) : member.range;
+      return Boolean(nearestMonster(member.x, member.y, range));
+    });
+  }
+
+  function combatPriorityActive() {
+    return state.waveActive || state.monsters.length > 0;
+  }
+
+  function updateCommandStuckState(squad, member, actualSpeed, distanceToTarget, dt) {
+    if (!squad.movingToCommand) {
+      member.commandHold = false;
+      member.commandStuckTime = 0;
+      return;
+    }
+    if (member.commandHold) return;
+    if (distanceToTarget <= 0.42) {
+      member.commandStuckTime = 0;
+      return;
+    }
+    if (actualSpeed <= 0.08) {
+      member.commandStuckTime = (member.commandStuckTime || 0) + dt;
+      if (member.commandStuckTime >= 1) {
+        member.commandHold = true;
+      }
+      return;
+    }
+    member.commandStuckTime = 0;
+  }
+
+  function squadReachedCommand(squad) {
+    if (squad.type === "catapult") {
+      const squadDistanceToCommand = Math.hypot(squad.x - squad.targetX, squad.y - squad.targetY);
+      const averageDistanceToCommand = squadAverageDistanceToCommand(squad);
+      return squadDistanceToCommand <= 1.45 || averageDistanceToCommand <= 1.8;
+    }
+    return squadFormationArrivalRatio(squad) >= 1;
+  }
+
+  function soldierMoveTarget(squad, member, index) {
+    if (member.commandHold) return { x: member.x, y: member.y };
+    const desiredFormation = squadSlotTarget(squad, member, index);
     if (!squad.flowField) return desiredFormation;
 
     const goalDistance = Math.hypot(member.x - desiredFormation.x, member.y - desiredFormation.y);
@@ -1586,6 +1871,63 @@
     return cellCenter(best.x, best.y);
   }
 
+  function squadSlotTarget(squad, member, index) {
+    const slotIndex = member.slot ?? index;
+    const slot = squad.formationSlots?.[index] || squad.formationSlots?.[slotIndex];
+    if (slot) return cellCenter(slot.x, slot.y);
+
+    const total = squad.formationSize || squad.members.length;
+    const offset = formationOffset(slotIndex, total);
+    return {
+      x: squad.targetX + offset.x,
+      y: squad.targetY + offset.y,
+    };
+  }
+
+  function unitWalkSpeedThreshold(unit) {
+    return unit.type === "catapult" ? 0.35 : SOLDIER_WALK_SPEED_THRESHOLD;
+  }
+
+  function unitWalkDistanceThreshold(unit) {
+    return unit.type === "catapult" ? 0.45 : 0.18;
+  }
+
+  function squadFormationAverageDistanceToCommand(squad) {
+    if (!squad.members.length) return 0;
+    const total = squad.members.reduce((sum, member, index) => {
+      const target = squadSlotTarget(squad, member, index);
+      return sum + Math.hypot(member.x - target.x, member.y - target.y);
+    }, 0);
+    return total / squad.members.length;
+  }
+
+  function squadFormationArrivalRatio(squad) {
+    if (!squad.members.length) return 1;
+    let arrived = 0;
+    squad.members.forEach((member, index) => {
+      const target = squadSlotTarget(squad, member, index);
+      const distance = Math.hypot(member.x - target.x, member.y - target.y);
+      if (member.commandHold || distance <= 0.34) arrived += 1;
+    });
+    return arrived / squad.members.length;
+  }
+
+  function meleeEngageRange(member) {
+    return Math.max(1.35, member.range + 0.45);
+  }
+
+  function meleeEngageMoveTarget(member, monster) {
+    const dx = monster.x - member.x;
+    const dy = monster.y - member.y;
+    const distance = Math.hypot(dx, dy);
+    if (distance <= member.range * 0.82 || distance <= 0.001) return { x: member.x, y: member.y };
+    const stopDistance = Math.max(0.45, member.range * 0.72);
+    return {
+      x: monster.x - (dx / distance) * stopDistance,
+      y: monster.y - (dy / distance) * stopDistance,
+    };
+  }
+
   function attackMonsterWithSoldier(member, target) {
     member.attackTimer = member.type === "catapult" ? 2.1 : member.type === "melee" ? 0.55 : 0.8;
     triggerUnitAnim(member, "attack");
@@ -1605,19 +1947,75 @@
       });
       return;
     }
+    if (member.type === "archer") {
+      const damage = member.damage * Math.max(0.35, member.hp / member.maxHp);
+      const distance = Math.max(0.1, Math.hypot(target.x - member.x, target.y - member.y));
+      const flightArc = clamp(distance * 0.16, 0.45, 1.05);
+      state.projectiles.push({
+        type: "arrow",
+        x: member.x,
+        y: member.y - 0.1,
+        groundX: member.x,
+        groundY: member.y - 0.1,
+        sx: member.x,
+        sy: member.y - 0.1,
+        tx: target.x,
+        ty: target.y,
+        target,
+        progress: 0,
+        speed: 5.8 / distance,
+        arc: flightArc,
+        lift: 0,
+        trail: [],
+        angle: Math.atan2(target.y - member.y, target.x - member.x),
+        damage,
+      });
+      return;
+    }
     damageUnit(target, member.damage * Math.max(0.35, member.hp / member.maxHp));
-    state.effects.push({ type: member.type === "archer" ? "arrow" : "slash", x: member.x, y: member.y, tx: target.x, ty: target.y, life: 0.12, maxLife: 0.12 });
+    state.effects.push({ type: "slash", x: member.x, y: member.y, tx: target.x, ty: target.y, life: 0.12, maxLife: 0.12 });
   }
 
   function updateProjectiles(dt) {
     state.projectiles.forEach((projectile) => {
       projectile.progress += dt * projectile.speed;
       const t = clamp(projectile.progress, 0, 1);
-      projectile.x = projectile.sx + (projectile.tx - projectile.sx) * t;
-      projectile.y = projectile.sy + (projectile.ty - projectile.sy) * t - Math.sin(t * Math.PI) * 1.8;
-      if (projectile.progress >= 1) explodeProjectile(projectile);
+      if (projectile.type === "arrow" && projectile.target?.hp > 0) {
+        projectile.tx = projectile.target.x;
+        projectile.ty = projectile.target.y;
+      }
+      const dx = projectile.tx - projectile.sx;
+      const dy = projectile.ty - projectile.sy;
+      projectile.groundX = projectile.sx + dx * t;
+      projectile.groundY = projectile.sy + dy * t;
+      projectile.x = projectile.groundX;
+      if (projectile.type === "arrow") {
+        projectile.lift = Math.sin(t * Math.PI) * (projectile.arc || 0.9);
+        projectile.y = projectile.groundY - projectile.lift;
+        const tangentY = dy - Math.cos(t * Math.PI) * Math.PI * (projectile.arc || 0.9);
+        projectile.angle = Math.atan2(tangentY, dx || 0.001);
+        projectile.trail.push({ x: projectile.x, y: projectile.y });
+        if (projectile.trail.length > 7) projectile.trail.shift();
+      } else {
+        projectile.y = projectile.sy + dy * t - Math.sin(t * Math.PI) * 1.8;
+      }
+      if (projectile.progress >= 1) {
+        if (projectile.type === "arrow") hitArrowProjectile(projectile);
+        else explodeProjectile(projectile);
+      }
     });
     state.projectiles = state.projectiles.filter((projectile) => projectile.progress < 1);
+  }
+
+  function hitArrowProjectile(projectile) {
+    const target =
+      projectile.target?.hp > 0
+        ? projectile.target
+        : nearestMonster(projectile.tx, projectile.ty, 0.65);
+    if (target) {
+      damageUnit(target, projectile.damage);
+      state.effects.push({ type: "hit", x: target.x, y: target.y, life: 0.14, maxLife: 0.14 });
+    }
   }
 
   function explodeProjectile(projectile) {
@@ -1637,7 +2035,7 @@
 
   function moveSoldier(member, target, dt) {
     const d = Math.hypot(target.x - member.x, target.y - member.y);
-    if (d <= 0.04) return false;
+    if (d <= unitArrivalDistance(member)) return false;
     const oldX = member.x;
     const oldY = member.y;
     const step = Math.min(d, member.speed * dt);
@@ -1654,11 +2052,19 @@
     return Math.hypot(member.x - oldX, member.y - oldY) > 0.003;
   }
 
+  function unitArrivalDistance(unit) {
+    return unit.type === "catapult" ? 0.18 : 0.04;
+  }
+
   function resolveSoldierCollisions(members) {
     for (let i = 0; i < members.length; i += 1) {
       for (let j = i + 1; j < members.length; j += 1) {
-        if (isAnchoredArcher(members[i]) || isAnchoredArcher(members[j])) continue;
-        pushApart(members[i], members[j], members[i].radius + members[j].radius);
+        if (shouldIgnoreFriendlyCollision(members[i], members[j])) continue;
+        const aAnchored = isAnchoredArcher(members[i]);
+        const bAnchored = isAnchoredArcher(members[j]);
+        const aShare = aAnchored && !bAnchored ? 0 : !aAnchored && bAnchored ? 1 : 0.5;
+        const bShare = bAnchored && !aAnchored ? 0 : !bAnchored && aAnchored ? 1 : 0.5;
+        pushApart(members[i], members[j], members[i].radius + members[j].radius, aShare, bShare);
       }
     }
     members.forEach((member) => {
@@ -1667,6 +2073,12 @@
         pushApart(member, monster, member.radius + monster.radius + 0.08, soldierShare, 1 - soldierShare);
       });
     });
+  }
+
+  function shouldIgnoreFriendlyCollision(a, b) {
+    if (!a.squadId || a.squadId !== b.squadId) return false;
+    const squad = state.squads.find((candidate) => candidate.id === a.squadId);
+    return Boolean(squad?.movingToCommand);
   }
 
   function isAnchoredArcher(member) {
@@ -2145,6 +2557,49 @@
     ctx.restore();
     drawAlerts();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
+    syncDebugDataset();
+  }
+
+  function syncDebugDataset() {
+    if (!DEBUG_MODE) return;
+    document.documentElement.dataset.assetStatus = JSON.stringify({
+      archer: spriteReady("archer"),
+      arrow: arrowSprite.complete && arrowSprite.naturalWidth > 0,
+      archerSize: spriteReady("archer") ? `${spriteWidth(unitSprites.archer)}x${spriteHeight(unitSprites.archer)}` : null,
+    });
+    document.documentElement.dataset.projectiles = JSON.stringify(
+      state.projectiles.map((projectile) => ({
+        type: projectile.type,
+        x: Number(projectile.x.toFixed(2)),
+        y: Number(projectile.y.toFixed(2)),
+        progress: Number(projectile.progress.toFixed(2)),
+        arc: projectile.arc ? Number(projectile.arc.toFixed(2)) : 0,
+        lift: projectile.lift ? Number(projectile.lift.toFixed(2)) : 0,
+        angle: typeof projectile.angle === "number" ? Number(projectile.angle.toFixed(2)) : null,
+      }))
+    );
+    document.documentElement.dataset.combatSummary = JSON.stringify({
+      squads: state.squads.map((squad) => ({
+        type: squad.type,
+        count: squad.members.length,
+        x: Number(squad.x.toFixed(2)),
+        y: Number(squad.y.toFixed(2)),
+        movingToCommand: !!squad.movingToCommand,
+        forceMoveCommand: !!squad.forceMoveCommand,
+        occupiedCells: new Set(squad.members.map((member) => `${Math.floor(member.x)},${Math.floor(member.y)}`)).size,
+        heldMembers: squad.members.filter((member) => member.commandHold).length,
+        formationSlots: squad.formationSlots?.length || 0,
+        sampleState: squad.members[0]?.animState,
+        sampleFrame: squad.members[0] ? spriteFrameIndex(squad.members[0], squad.members[0].animState) : null,
+        sampleFacing: squad.members[0]?.facing,
+      })),
+      monsters: state.monsters.slice(0, 6).map((monster) => ({
+        type: monster.type,
+        x: Number(monster.x.toFixed(2)),
+        y: Number(monster.y.toFixed(2)),
+        hp: Math.ceil(monster.hp),
+      })),
+    });
   }
 
   function drawGround() {
@@ -2331,7 +2786,16 @@
 
   function spriteReady(type) {
     const image = unitSprites[type];
+    if (image instanceof HTMLCanvasElement) return image.width > 0 && image.height > 0;
     return image?.complete && image.naturalWidth > 0 && image.naturalHeight > 0;
+  }
+
+  function spriteWidth(sprite) {
+    return sprite instanceof HTMLCanvasElement ? sprite.width : sprite.naturalWidth;
+  }
+
+  function spriteHeight(sprite) {
+    return sprite instanceof HTMLCanvasElement ? sprite.height : sprite.naturalHeight;
   }
 
   function spriteFrameIndex(unit, stateName) {
@@ -2350,17 +2814,18 @@
     const stateName = UNIT_ANIMATION_STATES.includes(unit.animState) ? unit.animState : "idle";
     const stateIndex = UNIT_ANIMATION_STATES.indexOf(stateName);
     const frameIndex = spriteFrameIndex(unit, stateName);
-    const frameWidth = image.naturalWidth / UNIT_FRAME_COUNT;
-    const frameHeight = image.naturalHeight / UNIT_ANIMATION_STATES.length;
+    const frameWidth = spriteWidth(image) / UNIT_FRAME_COUNT;
+    const frameHeight = spriteHeight(image) / UNIT_ANIMATION_STATES.length;
     const sourceX = frameWidth * frameIndex;
     const sourceY = frameHeight * stateIndex;
     const scale = UNIT_SPRITE_SCALE[unit.type] || 1;
     const drawWidth = CELL * scale;
     const drawHeight = CELL * scale;
-    const footY = py + unit.radius * CELL * 0.85;
+    const footY = unitSpriteFootY(unit, py);
 
     ctx.save();
-    if (unit.facing === "right") {
+    const flipSprite = unit.facing === "right";
+    if (flipSprite) {
       ctx.translate(px, footY);
       ctx.scale(-1, 1);
       ctx.drawImage(image, sourceX, sourceY, frameWidth, frameHeight, -drawWidth / 2, -drawHeight, drawWidth, drawHeight);
@@ -2371,14 +2836,11 @@
     return true;
   }
 
+  function unitSpriteFootY(unit, py) {
+    return py + unit.radius * CELL * 0.85;
+  }
+
   function drawFallbackSoldier(member, px, py) {
-    if (member.type === "catapult") {
-      ctx.fillStyle = "#b9a05b";
-      ctx.fillRect(px - member.radius * CELL, py - member.radius * CELL * 0.7, member.radius * CELL * 2, member.radius * CELL * 1.4);
-      ctx.fillStyle = "#6a4a2c";
-      ctx.fillRect(px + 2, py - 4, member.radius * CELL, 8);
-      return;
-    }
     ctx.fillStyle = member.type === "melee" ? "#75c46b" : "#7ec7e8";
     ctx.beginPath();
     ctx.arc(px, py, member.radius * CELL, 0, Math.PI * 2);
@@ -2411,6 +2873,7 @@
   function drawSquads() {
     state.squads.forEach((squad) => {
       squad.members.forEach((member) => {
+        if (member.type === "catapult") return;
         const px = member.x * CELL;
         const py = member.y * CELL;
         if (!drawUnitSprite(member, px, py)) drawFallbackSoldier(member, px, py);
@@ -2431,6 +2894,7 @@
 
   function drawDeathSprites() {
     state.deathSprites.forEach((sprite) => {
+      if (sprite.type === "catapult") return;
       const px = sprite.x * CELL;
       const py = sprite.y * CELL;
       if (drawUnitSprite(sprite, px, py)) return;
@@ -2449,6 +2913,10 @@
     state.projectiles.forEach((projectile) => {
       const px = projectile.x * CELL;
       const py = projectile.y * CELL;
+      if (projectile.type === "arrow") {
+        drawArrowProjectile(projectile, px, py);
+        return;
+      }
       ctx.fillStyle = "#4f4f4f";
       ctx.beginPath();
       ctx.arc(px, py, 5.5, 0, Math.PI * 2);
@@ -2460,13 +2928,71 @@
     });
   }
 
+  function drawArrowProjectile(projectile, px, py) {
+    const angle = projectile.angle ?? Math.atan2(projectile.ty - projectile.sy, projectile.tx - projectile.sx);
+    const groundPx = (projectile.groundX ?? projectile.x) * CELL;
+    const groundPy = (projectile.groundY ?? projectile.y) * CELL;
+    const shadowScale = 1 - Math.min(0.55, (projectile.lift || 0) * 0.22);
+    ctx.save();
+    ctx.globalAlpha = 0.16 * shadowScale;
+    ctx.fillStyle = "#1f2418";
+    ctx.beginPath();
+    ctx.ellipse(groundPx, groundPy + 3, 9 * shadowScale, 3.5 * shadowScale, angle, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    if (projectile.trail?.length > 1) {
+      ctx.save();
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.strokeStyle = "rgba(244, 222, 152, 0.34)";
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      projectile.trail.forEach((point, index) => {
+        const trailX = point.x * CELL;
+        const trailY = point.y * CELL;
+        if (index === 0) ctx.moveTo(trailX, trailY);
+        else ctx.lineTo(trailX, trailY);
+      });
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    if (!arrowSprite.complete || arrowSprite.naturalWidth === 0) {
+      ctx.strokeStyle = "#f3df9d";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo((projectile.x - Math.cos(angle) * 0.38) * CELL, (projectile.y - Math.sin(angle) * 0.38) * CELL);
+      ctx.lineTo((projectile.x + Math.cos(angle) * 0.38) * CELL, (projectile.y + Math.sin(angle) * 0.38) * CELL);
+      ctx.stroke();
+      return;
+    }
+
+    const drawWidth = 30 + Math.sin(clamp(projectile.progress, 0, 1) * Math.PI) * 3;
+    const drawHeight = 4.2;
+    const trailDistance = 8;
+    ctx.save();
+    ctx.translate(px - Math.cos(angle) * trailDistance, py - Math.sin(angle) * trailDistance);
+    ctx.rotate(angle + Math.PI);
+    ctx.globalAlpha = 0.22;
+    ctx.drawImage(arrowSprite, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
+    ctx.restore();
+
+    ctx.save();
+    ctx.translate(px, py);
+    ctx.rotate(angle + Math.PI);
+    ctx.globalAlpha = 0.96;
+    ctx.drawImage(arrowSprite, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
+    ctx.restore();
+  }
+
   function drawEffects() {
     state.effects.forEach((effect) => {
       const alpha = clamp(effect.life / effect.maxLife, 0, 1);
       ctx.globalAlpha = alpha;
-      if (effect.type === "arrow" || effect.type === "bolt") {
-        ctx.strokeStyle = effect.type === "bolt" ? "#e8f6ff" : "#c9e7ff";
-        ctx.lineWidth = effect.type === "bolt" ? 2.5 : 1.5;
+      if (effect.type === "bolt") {
+        ctx.strokeStyle = "#e8f6ff";
+        ctx.lineWidth = 2.5;
         ctx.beginPath();
         ctx.moveTo(effect.x * CELL, effect.y * CELL);
         ctx.lineTo(effect.tx * CELL, effect.ty * CELL);
@@ -2594,19 +3120,25 @@
 
   function drawSelectedUnitMarkers(squad) {
     squad.members.forEach((member) => {
+      if (member.type === "catapult") return;
       const px = member.x * CELL;
       const py = member.y * CELL;
       const radius = member.radius * CELL + 3;
+      const markerY = unitSelectionMarkerY(member, py, radius);
       ctx.fillStyle = "rgba(255,255,255,0.16)";
       ctx.beginPath();
-      ctx.ellipse(px, py + radius * 0.35, radius * 1.05, radius * 0.45, 0, 0, Math.PI * 2);
+      ctx.ellipse(px, markerY, radius * 1.05, radius * 0.45, 0, 0, Math.PI * 2);
       ctx.fill();
       ctx.strokeStyle = "#ffffff";
       ctx.lineWidth = 1.5;
       ctx.beginPath();
-      ctx.ellipse(px, py + radius * 0.35, radius * 1.05, radius * 0.45, 0, 0, Math.PI * 2);
+      ctx.ellipse(px, markerY, radius * 1.05, radius * 0.45, 0, 0, Math.PI * 2);
       ctx.stroke();
     });
+  }
+
+  function unitSelectionMarkerY(unit, py, radius) {
+    return py + radius * 0.35;
   }
 
   function drawSquadFlags() {
@@ -2708,11 +3240,43 @@
     wallDebugInfo,
     runWallMaskSelfTest,
     refreshAllWallAppearances,
+    assetStatus: () => ({
+      archer: spriteReady("archer"),
+      arrow: arrowSprite.complete && arrowSprite.naturalWidth > 0,
+      archerSize: spriteReady("archer") ? `${spriteWidth(unitSprites.archer)}x${spriteHeight(unitSprites.archer)}` : null,
+    }),
+    projectileSummary: () =>
+      state.projectiles.map((projectile) => ({
+        type: projectile.type,
+        x: Number(projectile.x.toFixed(2)),
+        y: Number(projectile.y.toFixed(2)),
+        tx: Number(projectile.tx.toFixed(2)),
+        ty: Number(projectile.ty.toFixed(2)),
+        progress: Number(projectile.progress.toFixed(2)),
+      })),
+    combatSummary: () => ({
+      squads: state.squads.map((squad) => ({
+        type: squad.type,
+        count: squad.members.length,
+        x: Number(squad.x.toFixed(2)),
+        y: Number(squad.y.toFixed(2)),
+        sampleState: squad.members[0]?.animState,
+        sampleFrame: squad.members[0] ? spriteFrameIndex(squad.members[0], squad.members[0].animState) : null,
+        sampleFacing: squad.members[0]?.facing,
+      })),
+      monsters: state.monsters.slice(0, 8).map((monster) => ({
+        type: monster.type,
+        x: Number(monster.x.toFixed(2)),
+        y: Number(monster.y.toFixed(2)),
+        hp: Math.ceil(monster.hp),
+      })),
+      projectiles: state.projectiles.length,
+    }),
   };
 
   setup();
   document.documentElement.dataset.wallDebugReady = "true";
-  if (new URLSearchParams(window.location.search).has("wallTest")) {
+  if (WALL_TEST_MODE) {
     document.documentElement.dataset.wallMaskSelfTest = JSON.stringify(runWallMaskSelfTest());
   }
 })();
