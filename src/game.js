@@ -42,31 +42,78 @@
     hit: 0.24,
     death: 0.48,
   };
-  const UNIT_SPRITE_SCALE = {
-    melee: 1.45,
-    archer: 1.45,
-    runner: 0.85,
-    bruiser: 1.0,
-    siege: 1.25,
-    boss: 2.35,
+  const DEFAULT_UNIT_RENDER_PROFILE = {
+    frameCount: UNIT_FRAME_COUNT,
+    sourceFrameCount: UNIT_FRAME_COUNT,
+    stateFrameCounts: {},
+    states: UNIT_ANIMATION_STATES,
+    sourceRows: UNIT_ANIMATION_STATES.length,
+    sourceRowsByState: [0, 1, 2, 3, 4],
+    durations: {},
+    contentWidthRatio: 0.9,
+    contentHeightRatio: 0.86,
+    scale: 1.45,
+    footOffsetRatio: 0.85,
+    flipWhenFacing: "right",
   };
-  const UNIT_SPRITE_FILES = {
-    melee: "asset/units/%EA%B7%BC%EC%A0%91%EB%B3%91%20%EC%97%90%EC%85%8B/melee.png",
-    archer: "asset/units/%EA%B6%81%EC%88%98%20%EC%97%90%EC%85%8B/%EA%B6%81%EC%88%98%20%EC%95%A0%EB%8B%88%EB%A9%94%EC%9D%B4%EC%85%98.png",
+  const UNIT_RENDER_PROFILES = {
+    melee: {
+      ...DEFAULT_UNIT_RENDER_PROFILE,
+      src: "asset/units/%EA%B7%BC%EC%A0%91%EB%B3%91%20%EC%97%90%EC%85%8B/melee.png",
+      normalize: false,
+    },
+    archer: {
+      ...DEFAULT_UNIT_RENDER_PROFILE,
+      src: "asset/units/%EA%B6%81%EC%88%98%20%EC%97%90%EC%85%8B/%EA%B6%81%EC%88%98%20%EC%95%A0%EB%8B%88%EB%A9%94%EC%9D%B4%EC%85%98.png",
+      sourceRows: 4,
+      sourceRowsByState: [0, 1, 2, 0, 3],
+      normalize: true,
+    },
+    catapult: {
+      ...DEFAULT_UNIT_RENDER_PROFILE,
+      src: "asset/units/catapult_sheet_clean.png?v=2",
+      sourceFrameCount: 6,
+      frameCount: 6,
+      stateFrameCounts: { idle: 1, walk: 3, attack: 6, hit: 1, death: 3 },
+      sourceRows: 4,
+      sourceRowsByState: [0, 1, 2, 0, 3],
+      durations: { idle: 0.72, walk: 0.58, attack: 0.86, hit: 0.24, death: 0.72 },
+      scale: 4.3,
+      footOffsetRatio: 0.74,
+      flipWhenFacing: "left",
+      normalize: false,
+    },
+    runner: {
+      ...DEFAULT_UNIT_RENDER_PROFILE,
+      src: "asset/units/runner.png",
+      scale: 0.85,
+      normalize: false,
+    },
+    bruiser: {
+      ...DEFAULT_UNIT_RENDER_PROFILE,
+      src: "asset/units/bruiser.png",
+      scale: 1.0,
+      normalize: false,
+    },
+    siege: {
+      ...DEFAULT_UNIT_RENDER_PROFILE,
+      src: "asset/units/siege.png",
+      scale: 1.25,
+      normalize: false,
+    },
+    boss: {
+      ...DEFAULT_UNIT_RENDER_PROFILE,
+      src: "asset/units/boss.png",
+      scale: 2.35,
+      normalize: false,
+    },
   };
   const unitSprites = {};
-  ["melee", "archer", "runner", "bruiser", "siege", "boss"].forEach((type) => {
-    const image = new Image();
-    if (type === "archer") {
-      image.onload = () => {
-        unitSprites[type] = normalizeFourRowUnitSpriteSheet(image);
-      };
-    }
-    image.src = UNIT_SPRITE_FILES[type] || `asset/units/${type}.png`;
-    unitSprites[type] = image;
-  });
+  Object.keys(UNIT_RENDER_PROFILES).forEach(loadUnitSprite);
   const arrowSprite = new Image();
   arrowSprite.src = "asset/units/%EA%B6%81%EC%88%98%20%EC%97%90%EC%85%8B/%ED%99%94%EC%82%B4.png";
+  const stoneSprite = new Image();
+  stoneSprite.src = "asset/units/catapult_projectile_clean.png?v=1";
   const ui = {
     gold: document.getElementById("gold"),
     wave: document.getElementById("wave"),
@@ -275,53 +322,66 @@
     return canvas;
   }
 
-  function normalizeFourRowUnitSpriteSheet(image, options = {}) {
-    const {
-      contentWidthRatio = 0.9,
-      contentHeightRatio = 0.86,
-    } = options;
-    return normalizeUnitSpriteSheet(image, 4, [0, 1, 2, 0, 3], contentWidthRatio, contentHeightRatio);
+  function unitRenderProfile(type) {
+    return UNIT_RENDER_PROFILES[type] || DEFAULT_UNIT_RENDER_PROFILE;
   }
 
-  function normalizeUnitSpriteSheet(image, sourceRows, sourceRowsByTargetState, contentWidthRatio, contentHeightRatio) {
+  function loadUnitSprite(type) {
+    const profile = unitRenderProfile(type);
+    if (!profile.src) return;
+    const image = new Image();
+    if (profile.normalize) {
+      image.onload = () => {
+        unitSprites[type] = normalizeUnitSpriteSheet(image, profile);
+      };
+    }
+    image.src = profile.src || `asset/units/${type}.png`;
+    unitSprites[type] = image;
+  }
+
+  function normalizeUnitSpriteSheet(image, profile = DEFAULT_UNIT_RENDER_PROFILE) {
     const source = document.createElement("canvas");
     source.width = image.naturalWidth;
     source.height = image.naturalHeight;
     const sourceCtx = source.getContext("2d");
     sourceCtx.drawImage(image, 0, 0);
     removeNearBlackBackground(source);
-    const sourceFrameWidth = source.width / UNIT_FRAME_COUNT;
+    const frameCount = profile.sourceFrameCount || profile.frameCount || UNIT_FRAME_COUNT;
+    const sourceRows = profile.sourceRows || profile.states.length;
+    const sourceRowsByTargetState = profile.sourceRowsByState || [0, 1, 2, 3, 4];
+    const sourceFrameWidth = source.width / frameCount;
     const sourceFrameHeight = source.height / sourceRows;
-    const frameSize = Math.ceil(sourceFrameWidth);
+    const frameSize = profile.targetFrameSize || Math.ceil(sourceFrameWidth);
     const canvas = document.createElement("canvas");
-    canvas.width = frameSize * UNIT_FRAME_COUNT;
-    canvas.height = frameSize * UNIT_ANIMATION_STATES.length;
+    canvas.width = frameSize * frameCount;
+    canvas.height = frameSize * profile.states.length;
     const spriteCtx = canvas.getContext("2d");
     sourceRowsByTargetState.forEach((sourceRow, targetRow) => {
-      for (let frame = 0; frame < UNIT_FRAME_COUNT; frame += 1) {
+      for (let frame = 0; frame < frameCount; frame += 1) {
         const sx = Math.round(frame * sourceFrameWidth);
         const sy = Math.round(sourceRow * sourceFrameHeight);
         const sw = Math.round((frame + 1) * sourceFrameWidth) - sx;
         const sh = Math.round((sourceRow + 1) * sourceFrameHeight) - sy;
-        const bounds = spriteFrameBounds(source, sx, sy, sw, sh);
+        const frameBounds = spriteFrameBounds(source, sx, sy, sw, sh);
+        const bounds = frameBounds;
         const targetX = frame * frameSize;
         const targetY = targetRow * frameSize;
-        if (!bounds) {
+        if (!bounds || !frameBounds) {
           continue;
         }
-        const targetContentWidth = frameSize * contentWidthRatio;
-        const targetContentHeight = frameSize * contentHeightRatio;
+        const targetContentWidth = frameSize * profile.contentWidthRatio;
+        const targetContentHeight = frameSize * profile.contentHeightRatio;
         const fitScale = Math.min(targetContentWidth / bounds.width, targetContentHeight / bounds.height);
-        const drawWidth = bounds.width * fitScale;
-        const drawHeight = bounds.height * fitScale;
-        const dx = targetX + frameSize / 2 - drawWidth / 2;
-        const dy = targetY + frameSize * 0.9 - drawHeight;
+        const drawWidth = frameBounds.width * fitScale;
+        const drawHeight = frameBounds.height * fitScale;
+        const dx = targetX + frameSize / 2 - (bounds.width * fitScale) / 2 + (frameBounds.x - bounds.x) * fitScale;
+        const dy = targetY + frameSize * 0.9 - bounds.height * fitScale + (frameBounds.y - bounds.y) * fitScale;
         spriteCtx.drawImage(
           source,
-          bounds.x,
-          bounds.y,
-          bounds.width,
-          bounds.height,
+          frameBounds.x,
+          frameBounds.y,
+          frameBounds.width,
+          frameBounds.height,
           dx,
           dy,
           drawWidth,
@@ -1185,8 +1245,10 @@
         targetY: y + 0.5,
         flowField: null,
         formationSlots: null,
+        combatMoveSlots: null,
         forceMoveCommand: false,
         movingToCommand: false,
+        commandIssuedDuringCombat: false,
         formationSize: 0,
         members: [],
       };
@@ -1228,9 +1290,10 @@
       splash: stats.splash,
       attackTimer: 0,
       animState: "idle",
-      animTime: Math.random() * UNIT_ANIMATION_DURATIONS.idle,
+      animTime: Math.random() * unitAnimationDuration({ type }, "idle"),
       attackAnimTimer: 0,
       hitAnimTimer: 0,
+      pendingCatapultShot: null,
       commandHold: false,
       commandStuckTime: 0,
       facing: "right",
@@ -1294,18 +1357,38 @@
     unit.animTime += dt;
     unit.attackAnimTimer = Math.max(0, (unit.attackAnimTimer || 0) - dt);
     unit.hitAnimTimer = Math.max(0, (unit.hitAnimTimer || 0) - dt);
+    updatePendingCatapultShot(unit);
+  }
+
+  function updatePendingCatapultShot(unit) {
+    if (unit.type !== "catapult" || !unit.pendingCatapultShot || unit.animState !== "attack") return;
+    const attackFrames = unitStateFrameCount(unit.type, "attack");
+    const attackDuration = unitAnimationDuration(unit, "attack");
+    const fireTime = attackDuration * ((attackFrames - 1) / attackFrames);
+    if (unit.animTime < fireTime) return;
+    fireCatapultShot(unit);
   }
 
   function triggerUnitAnim(unit, stateName) {
     unit.animState = stateName;
     unit.animTime = 0;
-    if (stateName === "attack") unit.attackAnimTimer = UNIT_ANIMATION_DURATIONS.attack;
-    if (stateName === "hit") unit.hitAnimTimer = UNIT_ANIMATION_DURATIONS.hit;
+    if (stateName === "attack") unit.attackAnimTimer = unitAnimationDuration(unit, "attack");
+    if (stateName === "hit") unit.hitAnimTimer = unitAnimationDuration(unit, "hit");
   }
 
   function setFacingFromDelta(unit, dx, dy) {
     if (Math.abs(dx) < 0.015 && Math.abs(dy) < 0.015) return;
+    if (unit.type === "catapult") {
+      if (unit.attackAnimTimer > 0) return;
+      if (Math.abs(dx) < 0.45) return;
+    }
     unit.facing = dx < 0 ? "left" : "right";
+  }
+
+  function setFacingForAttack(unit, target) {
+    const dx = target.x - unit.x;
+    if (unit.type === "catapult" && Math.abs(dx) < 0.45) return;
+    setFacingFromDelta(unit, dx, target.y - unit.y);
   }
 
   function damageUnit(unit, amount) {
@@ -1328,8 +1411,8 @@
       facing: unit.facing || "right",
       animState: "death",
       animTime: 0,
-      life: UNIT_ANIMATION_DURATIONS.death,
-      maxLife: UNIT_ANIMATION_DURATIONS.death,
+      life: unitAnimationDuration(unit, "death"),
+      maxLife: unitAnimationDuration(unit, "death"),
     });
   }
 
@@ -1357,8 +1440,10 @@
         targetY: y,
         flowField: null,
         formationSlots: null,
+        combatMoveSlots: null,
         forceMoveCommand: false,
         movingToCommand: false,
+        commandIssuedDuringCombat: false,
         formationSize: chunk.length,
         members: chunk,
       });
@@ -1385,16 +1470,19 @@
   function commandSelectedSquad(x, y) {
     if (!state.selectedSquad) return;
     const squad = state.selectedSquad;
-    const formationCenter = findFormationCenter(squad, x, y);
-    if (!formationCenter) {
+    const combatMove = combatPriorityActive() && squad.type !== "catapult";
+    const movePlan = combatMove ? findCombatMoveCenter(squad, x, y) : findFormationCenter(squad, x, y);
+    if (!movePlan) {
       setStatus("부대가 이동할 수 없는 위치입니다.");
       return;
     }
-    squad.targetX = formationCenter.x + 0.5;
-    squad.targetY = formationCenter.y + 0.5;
-    squad.flowField = formationCenter.flowField;
-    squad.formationSlots = formationCenter.slots;
+    squad.targetX = movePlan.x + 0.5;
+    squad.targetY = movePlan.y + 0.5;
+    squad.flowField = movePlan.flowField;
+    squad.formationSlots = combatMove ? null : movePlan.slots;
+    squad.combatMoveSlots = combatMove ? movePlan.slots : null;
     squad.forceMoveCommand = true;
+    squad.commandIssuedDuringCombat = combatMove;
     squad.members.forEach((member) => {
       member.commandHold = false;
       member.commandStuckTime = 0;
@@ -1431,6 +1519,70 @@
       if (best && radius >= 1) return best;
     }
     return best;
+  }
+
+  function findCombatMoveCenter(squad, goalX, goalY) {
+    if (!inBounds(goalX, goalY)) return null;
+    let best = null;
+    let bestScore = -Infinity;
+    for (let radius = 0; radius <= 5; radius += 1) {
+      for (let y = goalY - radius; y <= goalY + radius; y += 1) {
+        for (let x = goalX - radius; x <= goalX + radius; x += 1) {
+          if (Math.max(Math.abs(x - goalX), Math.abs(y - goalY)) !== radius) continue;
+          if (!inBounds(x, y)) continue;
+          const slots = combatMoveSlotCells(squad, x, y);
+          const fit = formationFitScore(squad, slots);
+          if (fit < Math.max(1, Math.ceil(squad.members.length * 0.45))) continue;
+          const flowField = buildUnitFlowField(squad.type, x, y);
+          if (!squadCanReachFlowField(squad, flowField)) continue;
+          const goalDistance = Math.hypot(x - goalX, y - goalY);
+          const squadDistance = Math.hypot(x + 0.5 - squad.x, y + 0.5 - squad.y);
+          const score = fit * 1000 - goalDistance * 80 - squadDistance;
+          if (score > bestScore) {
+            bestScore = score;
+            best = { x, y, slots, flowField };
+          }
+        }
+      }
+      if (best && radius >= 1) return best;
+    }
+    return best;
+  }
+
+  function combatMoveSlotCells(squad, centerX, centerY) {
+    const used = new Set();
+    const total = squad.formationSize || squad.members.length;
+    return squad.members.map((member, index) => {
+      const currentOffset = {
+        x: clamp(Math.round(member.x - squad.x), -5, 5),
+        y: clamp(Math.round(member.y - squad.y), -5, 5),
+      };
+      const fallbackOffset = formationSlotLocal(member.slot ?? index, total);
+      const looseRallyOffset = {
+        x: Math.round(fallbackOffset.x * 0.7 + currentOffset.x * 0.3),
+        y: Math.round(fallbackOffset.y * 0.7 + currentOffset.y * 0.3),
+      };
+      return reserveCombatMoveSlot(centerX, centerY, looseRallyOffset, fallbackOffset, currentOffset, used);
+    });
+  }
+
+  function reserveCombatMoveSlot(centerX, centerY, preferred, fallback, current, used) {
+    const candidates = [preferred, fallback, current];
+    for (const base of candidates) {
+      for (let radius = 0; radius <= 3; radius += 1) {
+        for (let y = base.y - radius; y <= base.y + radius; y += 1) {
+          for (let x = base.x - radius; x <= base.x + radius; x += 1) {
+            if (Math.max(Math.abs(x - base.x), Math.abs(y - base.y)) !== radius) continue;
+            const slot = { x: centerX + x, y: centerY + y };
+            const key = idx(clamp(slot.x, 0, COLS - 1), clamp(slot.y, 0, ROWS - 1));
+            if (!inBounds(slot.x, slot.y) || used.has(key)) continue;
+            used.add(key);
+            return slot;
+          }
+        }
+      }
+    }
+    return { x: centerX, y: centerY };
   }
 
   function formationFitScore(squad, slots) {
@@ -1564,6 +1716,9 @@
 
   function startWave() {
     if (state.waveActive || state.gameOver) return;
+    state.squads.forEach((squad) => {
+      clearSquadMoveCommand(squad);
+    });
     state.waveActive = true;
     state.spawnQueue = makeWave(state.wave);
     state.spawnTimer = 0;
@@ -1739,16 +1894,10 @@
   function updateSquads(dt) {
     state.squads.forEach((squad) => {
       if (squad.movingToCommand && squadShouldBreakFormationForCombat(squad)) {
-        squad.movingToCommand = false;
-        squad.flowField = null;
-        squad.formationSlots = null;
-        squad.forceMoveCommand = false;
+        clearSquadMoveCommand(squad);
       }
       if (squad.movingToCommand && squadReachedCommand(squad)) {
-        squad.movingToCommand = false;
-        squad.flowField = null;
-        squad.formationSlots = null;
-        squad.forceMoveCommand = false;
+        clearSquadMoveCommand(squad);
       }
       squad.members.forEach((member, index) => {
         member.attackTimer -= dt;
@@ -1803,11 +1952,23 @@
   function squadShouldBreakFormationForCombat(squad) {
     if (squad.type === "catapult") return false;
     if (squad.forceMoveCommand && !combatPriorityActive()) return false;
+    if (squad.forceMoveCommand && squad.commandIssuedDuringCombat) {
+      return false;
+    }
     return squad.members.some((member) => {
       if (member.hp <= 0) return false;
       const range = member.type === "melee" ? meleeEngageRange(member) : member.range;
       return Boolean(nearestMonster(member.x, member.y, range));
     });
+  }
+
+  function clearSquadMoveCommand(squad) {
+    squad.movingToCommand = false;
+    squad.flowField = null;
+    squad.formationSlots = null;
+    squad.combatMoveSlots = null;
+    squad.forceMoveCommand = false;
+    squad.commandIssuedDuringCombat = false;
   }
 
   function combatPriorityActive() {
@@ -1841,11 +2002,17 @@
       const averageDistanceToCommand = squadAverageDistanceToCommand(squad);
       return squadDistanceToCommand <= 1.45 || averageDistanceToCommand <= 1.8;
     }
+    if (squad.commandIssuedDuringCombat) {
+      return squadCombatMoveArrivalRatio(squad) >= 0.75;
+    }
     return squadFormationArrivalRatio(squad) >= 1;
   }
 
   function soldierMoveTarget(squad, member, index) {
     if (member.commandHold) return { x: member.x, y: member.y };
+    if (squad.commandIssuedDuringCombat) {
+      return combatFlowMoveTarget(squad, member);
+    }
     const desiredFormation = squadSlotTarget(squad, member, index);
     if (!squad.flowField) return desiredFormation;
 
@@ -1869,6 +2036,34 @@
 
     if (!best) return desiredFormation;
     return cellCenter(best.x, best.y);
+  }
+
+  function combatFlowMoveTarget(squad, member) {
+    const rallyDistance = Math.hypot(member.x - squad.targetX, member.y - squad.targetY);
+    if (rallyDistance <= combatRallyRadius(squad)) {
+      return { x: member.x, y: member.y };
+    }
+    if (!squad.flowField) return { x: squad.targetX, y: squad.targetY };
+
+    const cx = clamp(Math.floor(member.x), 0, COLS - 1);
+    const cy = clamp(Math.floor(member.y), 0, ROWS - 1);
+    const currentDistance = squad.flowField[idx(cx, cy)];
+    let best = null;
+    let bestScore = currentDistance;
+    neighbors(cx, cy).forEach((cell) => {
+      const score = squad.flowField[idx(cell.x, cell.y)];
+      if (score < bestScore && !isBlockedForUnit(member.type, cell.x, cell.y)) {
+        bestScore = score;
+        best = cell;
+      }
+    });
+
+    if (!best && Number.isFinite(currentDistance)) return { x: member.x, y: member.y };
+    return best ? cellCenter(best.x, best.y) : { x: squad.targetX, y: squad.targetY };
+  }
+
+  function combatRallyRadius(squad) {
+    return clamp(0.95 + Math.sqrt(Math.max(1, squad.members.length)) * 0.14, 1.05, 2.15);
   }
 
   function squadSlotTarget(squad, member, index) {
@@ -1912,6 +2107,17 @@
     return arrived / squad.members.length;
   }
 
+  function squadCombatMoveArrivalRatio(squad) {
+    if (!squad.members.length) return 1;
+    const radius = combatRallyRadius(squad);
+    let arrived = 0;
+    squad.members.forEach((member) => {
+      const distance = Math.hypot(member.x - squad.targetX, member.y - squad.targetY);
+      if (member.commandHold || distance <= radius) arrived += 1;
+    });
+    return arrived / squad.members.length;
+  }
+
   function meleeEngageRange(member) {
     return Math.max(1.35, member.range + 0.45);
   }
@@ -1930,23 +2136,23 @@
 
   function attackMonsterWithSoldier(member, target) {
     member.attackTimer = member.type === "catapult" ? 2.1 : member.type === "melee" ? 0.55 : 0.8;
-    triggerUnitAnim(member, "attack");
     if (member.type === "catapult") {
-      state.projectiles.push({
+      setFacingForAttack(member, target);
+      triggerUnitAnim(member, "attack");
+      const distance = Math.max(0.1, Math.hypot(target.x - member.x, target.y - member.y));
+      member.pendingCatapultShot = {
         type: "stone",
-        x: member.x,
-        y: member.y,
-        sx: member.x,
-        sy: member.y,
+        target,
         tx: target.x,
         ty: target.y,
-        progress: 0,
-        speed: 1.45,
+        speed: 3.2 / distance,
+        arc: clamp(distance * 0.34, 2.1, 3.4),
         damage: member.damage,
         splash: member.splash,
-      });
+      };
       return;
     }
+    triggerUnitAnim(member, "attack");
     if (member.type === "archer") {
       const damage = member.damage * Math.max(0.35, member.hp / member.maxHp);
       const distance = Math.max(0.1, Math.hypot(target.x - member.x, target.y - member.y));
@@ -1976,6 +2182,35 @@
     state.effects.push({ type: "slash", x: member.x, y: member.y, tx: target.x, ty: target.y, life: 0.12, maxLife: 0.12 });
   }
 
+  function fireCatapultShot(member) {
+    const shot = member.pendingCatapultShot;
+    if (!shot) return;
+    if (shot.target?.hp > 0) {
+      shot.tx = shot.target.x;
+      shot.ty = shot.target.y;
+    }
+    const distance = Math.max(0.1, Math.hypot(shot.tx - member.x, shot.ty - member.y));
+    state.projectiles.push({
+      type: "stone",
+      x: member.x,
+      y: member.y - 0.18,
+      groundX: member.x,
+      groundY: member.y - 0.18,
+      sx: member.x,
+      sy: member.y - 0.18,
+      tx: shot.tx,
+      ty: shot.ty,
+      progress: 0,
+      speed: 3.2 / distance,
+      arc: shot.arc,
+      lift: 0,
+      angle: Math.atan2(shot.ty - member.y, shot.tx - member.x),
+      damage: shot.damage,
+      splash: shot.splash,
+    });
+    member.pendingCatapultShot = null;
+  }
+
   function updateProjectiles(dt) {
     state.projectiles.forEach((projectile) => {
       projectile.progress += dt * projectile.speed;
@@ -1996,6 +2231,10 @@
         projectile.angle = Math.atan2(tangentY, dx || 0.001);
         projectile.trail.push({ x: projectile.x, y: projectile.y });
         if (projectile.trail.length > 7) projectile.trail.shift();
+      } else if (projectile.type === "stone") {
+        projectile.lift = Math.sin(t * Math.PI) * (projectile.arc || 2.6);
+        projectile.y = projectile.groundY - projectile.lift;
+        projectile.angle = Math.atan2(dy, dx || 0.001);
       } else {
         projectile.y = projectile.sy + dy * t - Math.sin(t * Math.PI) * 1.8;
       }
@@ -2078,7 +2317,7 @@
   function shouldIgnoreFriendlyCollision(a, b) {
     if (!a.squadId || a.squadId !== b.squadId) return false;
     const squad = state.squads.find((candidate) => candidate.id === a.squadId);
-    return Boolean(squad?.movingToCommand);
+    return Boolean(squad?.movingToCommand && !squad.commandIssuedDuringCombat);
   }
 
   function isAnchoredArcher(member) {
@@ -2499,6 +2738,9 @@
     if (state.waveActive && state.spawnQueue.length === 0 && state.monsters.length === 0) {
       state.waveActive = false;
       state.won = true;
+      state.squads.forEach((squad) => {
+        squad.commandIssuedDuringCombat = false;
+      });
       normalizePendingSquads();
       state.gold += 110 + state.wave * 30;
       setStatus(`${state.wave} 웨이브 섬멸. 다음 웨이브를 준비하세요.`);
@@ -2565,6 +2807,7 @@
     document.documentElement.dataset.assetStatus = JSON.stringify({
       archer: spriteReady("archer"),
       arrow: arrowSprite.complete && arrowSprite.naturalWidth > 0,
+      stone: stoneSprite.complete && stoneSprite.naturalWidth > 0,
       archerSize: spriteReady("archer") ? `${spriteWidth(unitSprites.archer)}x${spriteHeight(unitSprites.archer)}` : null,
     });
     document.documentElement.dataset.projectiles = JSON.stringify(
@@ -2589,6 +2832,7 @@
         occupiedCells: new Set(squad.members.map((member) => `${Math.floor(member.x)},${Math.floor(member.y)}`)).size,
         heldMembers: squad.members.filter((member) => member.commandHold).length,
         formationSlots: squad.formationSlots?.length || 0,
+        combatMoveSlots: squad.combatMoveSlots?.length || 0,
         sampleState: squad.members[0]?.animState,
         sampleFrame: squad.members[0] ? spriteFrameIndex(squad.members[0], squad.members[0].animState) : null,
         sampleFacing: squad.members[0]?.facing,
@@ -2799,32 +3043,42 @@
   }
 
   function spriteFrameIndex(unit, stateName) {
-    const duration = UNIT_ANIMATION_DURATIONS[stateName] || UNIT_ANIMATION_DURATIONS.idle;
-    const step = duration / UNIT_FRAME_COUNT;
+    const duration = unitAnimationDuration(unit, stateName);
+    const frameCount = unitStateFrameCount(unit.type, stateName);
+    const step = duration / frameCount;
     if (stateName === "idle" || stateName === "walk") {
-      return Math.floor(unit.animTime / step) % UNIT_FRAME_COUNT;
+      return Math.floor(unit.animTime / step) % frameCount;
     }
-    return clamp(Math.floor(unit.animTime / step), 0, UNIT_FRAME_COUNT - 1);
+    return clamp(Math.floor(unit.animTime / step), 0, frameCount - 1);
   }
 
   function drawUnitSprite(unit, px, py) {
     if (!spriteReady(unit.type)) return false;
 
     const image = unitSprites[unit.type];
-    const stateName = UNIT_ANIMATION_STATES.includes(unit.animState) ? unit.animState : "idle";
-    const stateIndex = UNIT_ANIMATION_STATES.indexOf(stateName);
+    const profile = unitRenderProfile(unit.type);
+    const states = profile.states || UNIT_ANIMATION_STATES;
+    const sourceFrameCount = profile.sourceFrameCount || profile.frameCount || UNIT_FRAME_COUNT;
+    const stateName = states.includes(unit.animState) ? unit.animState : "idle";
+    const stateIndex = states.indexOf(stateName);
     const frameIndex = spriteFrameIndex(unit, stateName);
-    const frameWidth = spriteWidth(image) / UNIT_FRAME_COUNT;
-    const frameHeight = spriteHeight(image) / UNIT_ANIMATION_STATES.length;
+    const frameWidth = spriteWidth(image) / sourceFrameCount;
+    const sourceRows = profile.normalize ? states.length : profile.sourceRows || states.length;
+    const frameHeight = spriteHeight(image) / sourceRows;
     const sourceX = frameWidth * frameIndex;
-    const sourceY = frameHeight * stateIndex;
-    const scale = UNIT_SPRITE_SCALE[unit.type] || 1;
+    const sourceRow = profile.normalize ? stateIndex : profile.sourceRowsByState?.[stateIndex] ?? stateIndex;
+    const sourceY = frameHeight * sourceRow;
+    const scale = profile.scale || DEFAULT_UNIT_RENDER_PROFILE.scale;
     const drawWidth = CELL * scale;
     const drawHeight = CELL * scale;
     const footY = unitSpriteFootY(unit, py);
 
     ctx.save();
-    const flipSprite = unit.facing === "right";
+    if (unit.type === "catapult") {
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+    }
+    const flipSprite = unit.facing === (profile.flipWhenFacing || "right");
     if (flipSprite) {
       ctx.translate(px, footY);
       ctx.scale(-1, 1);
@@ -2837,7 +3091,17 @@
   }
 
   function unitSpriteFootY(unit, py) {
-    return py + unit.radius * CELL * 0.85;
+    return py + unit.radius * CELL * (unitRenderProfile(unit.type).footOffsetRatio || DEFAULT_UNIT_RENDER_PROFILE.footOffsetRatio);
+  }
+
+  function unitStateFrameCount(type, stateName) {
+    const profile = unitRenderProfile(type);
+    return profile.stateFrameCounts?.[stateName] || profile.frameCount || UNIT_FRAME_COUNT;
+  }
+
+  function unitAnimationDuration(unit, stateName) {
+    const profile = unitRenderProfile(unit.type);
+    return profile.durations?.[stateName] || UNIT_ANIMATION_DURATIONS[stateName] || UNIT_ANIMATION_DURATIONS.idle;
   }
 
   function drawFallbackSoldier(member, px, py) {
@@ -2873,7 +3137,6 @@
   function drawSquads() {
     state.squads.forEach((squad) => {
       squad.members.forEach((member) => {
-        if (member.type === "catapult") return;
         const px = member.x * CELL;
         const py = member.y * CELL;
         if (!drawUnitSprite(member, px, py)) drawFallbackSoldier(member, px, py);
@@ -2894,7 +3157,6 @@
 
   function drawDeathSprites() {
     state.deathSprites.forEach((sprite) => {
-      if (sprite.type === "catapult") return;
       const px = sprite.x * CELL;
       const py = sprite.y * CELL;
       if (drawUnitSprite(sprite, px, py)) return;
@@ -2917,6 +3179,10 @@
         drawArrowProjectile(projectile, px, py);
         return;
       }
+      if (projectile.type === "stone") {
+        drawStoneProjectile(projectile, px, py);
+        return;
+      }
       ctx.fillStyle = "#4f4f4f";
       ctx.beginPath();
       ctx.arc(px, py, 5.5, 0, Math.PI * 2);
@@ -2926,6 +3192,45 @@
       ctx.arc(px - 1.5, py - 1.5, 2, 0, Math.PI * 2);
       ctx.fill();
     });
+  }
+
+  function drawStoneProjectile(projectile, px, py) {
+    const progress = clamp(projectile.progress, 0, 1);
+    const lift = projectile.lift || 0;
+    const groundPx = (projectile.groundX ?? projectile.x) * CELL;
+    const groundPy = (projectile.groundY ?? projectile.y) * CELL;
+    const shadowScale = 1 - Math.min(0.58, lift * 0.16);
+
+    ctx.save();
+    ctx.globalAlpha = 0.18 * shadowScale;
+    ctx.fillStyle = "#1f2418";
+    ctx.beginPath();
+    ctx.ellipse(groundPx, groundPy + 4, 12 * shadowScale, 5 * shadowScale, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    if (!stoneSprite.complete || stoneSprite.naturalWidth === 0) {
+      ctx.fillStyle = "#4f4f4f";
+      ctx.beginPath();
+      ctx.arc(px, py, 5.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "rgba(255,255,255,0.35)";
+      ctx.beginPath();
+      ctx.arc(px - 1.5, py - 1.5, 2, 0, Math.PI * 2);
+      ctx.fill();
+      return;
+    }
+
+    const size = CELL * (0.43 + Math.sin(progress * Math.PI) * 0.09);
+    const drawWidth = size * (stoneSprite.naturalWidth / stoneSprite.naturalHeight);
+    const angle = projectile.angle ?? Math.atan2(projectile.ty - projectile.sy, projectile.tx - projectile.sx);
+    ctx.save();
+    ctx.translate(px, py);
+    ctx.rotate(angle * 0.08);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(stoneSprite, -drawWidth / 2, -size / 2, drawWidth, size);
+    ctx.restore();
   }
 
   function drawArrowProjectile(projectile, px, py) {
@@ -3120,7 +3425,6 @@
 
   function drawSelectedUnitMarkers(squad) {
     squad.members.forEach((member) => {
-      if (member.type === "catapult") return;
       const px = member.x * CELL;
       const py = member.y * CELL;
       const radius = member.radius * CELL + 3;
@@ -3243,6 +3547,7 @@
     assetStatus: () => ({
       archer: spriteReady("archer"),
       arrow: arrowSprite.complete && arrowSprite.naturalWidth > 0,
+      stone: stoneSprite.complete && stoneSprite.naturalWidth > 0,
       archerSize: spriteReady("archer") ? `${spriteWidth(unitSprites.archer)}x${spriteHeight(unitSprites.archer)}` : null,
     }),
     projectileSummary: () =>
