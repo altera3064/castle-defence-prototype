@@ -157,7 +157,7 @@
   const MEDIUM_SQUAD_SIZE = 3;
   const MAX_CATAPULTS = 10;
   const CATAPULT_FORMATION_SLOT_SPACING = 2;
-  const CATAPULT_FORMATION_FOOTPRINT = 1;
+  const CATAPULT_FORMATION_FOOTPRINT = 0;
   const SOLDIER_WALK_SPEED_THRESHOLD = 0.18;
   const WORLD_WIDTH = COLS * CELL;
   const WORLD_HEIGHT = ROWS * CELL;
@@ -1500,7 +1500,8 @@
     if (!state.selectedSquad) return;
     const squad = state.selectedSquad;
     const combatMove = combatPriorityActive();
-    const movePlan = combatMove ? findCombatMoveCenter(squad, x, y) : findFormationCenter(squad, x, y);
+    const formationMove = !combatMove || squad.type === "catapult";
+    const movePlan = formationMove ? findFormationCenter(squad, x, y) : findCombatMoveCenter(squad, x, y);
     if (!movePlan) {
       setStatus("부대가 이동할 수 없는 위치입니다.");
       return;
@@ -1508,11 +1509,11 @@
     squad.targetX = movePlan.x + 0.5;
     squad.targetY = movePlan.y + 0.5;
     squad.flowField = movePlan.flowField;
-    squad.formationSlots = combatMove ? null : movePlan.slots;
-    squad.formationSlotFlowFields = combatMove ? null : movePlan.slotFlowFields || null;
-    squad.combatMoveSlots = combatMove ? movePlan.slots : null;
+    squad.formationSlots = formationMove ? movePlan.slots : null;
+    squad.formationSlotFlowFields = formationMove ? movePlan.slotFlowFields || null : null;
+    squad.combatMoveSlots = formationMove ? null : movePlan.slots;
     squad.forceMoveCommand = true;
-    squad.commandIssuedDuringCombat = combatMove;
+    squad.commandIssuedDuringCombat = combatMove && !formationMove;
     squad.members.forEach((member) => {
       member.commandHold = false;
       member.commandStuckTime = 0;
@@ -2037,6 +2038,7 @@
 
   function squadShouldBreakFormationForCombat(squad) {
     if (squad.forceMoveCommand && !combatPriorityActive()) return false;
+    if (squad.forceMoveCommand && squad.type === "catapult") return false;
     if (squad.forceMoveCommand && squad.commandIssuedDuringCombat) {
       return false;
     }
@@ -2127,7 +2129,19 @@
     const desiredFormation = squadSlotTarget(squad, member, index);
     const distance = Math.hypot(member.x - desiredFormation.x, member.y - desiredFormation.y);
     if (distance <= formationArrivalDistance(member.type)) return { x: member.x, y: member.y };
-    if (!isPointBlockedForUnit(member.type, desiredFormation.x, desiredFormation.y)) return desiredFormation;
+    if (member.type === "catapult" && squad.flowField) {
+      const rallyDistance = Math.hypot(member.x - squad.targetX, member.y - squad.targetY);
+      if (rallyDistance > catapultFormationSettleRadius()) {
+        const sharedTarget = flowFieldStepTarget(member.type, member, squad.flowField);
+        if (sharedTarget) return sharedTarget;
+      }
+    }
+    if (
+      !isPointBlockedForUnit(member.type, desiredFormation.x, desiredFormation.y) &&
+      hasClearUnitLine(member.type, member.x, member.y, desiredFormation.x, desiredFormation.y)
+    ) {
+      return desiredFormation;
+    }
 
     const flowField = squad.formationSlotFlowFields[index];
     const cx = clamp(Math.floor(member.x), 0, COLS - 1);
@@ -2144,6 +2158,36 @@
 
     if (!best && Number.isFinite(currentDistance)) return { x: member.x, y: member.y };
     return best ? cellCenter(best.x, best.y) : desiredFormation;
+  }
+
+  function catapultFormationSettleRadius() {
+    return 3.2;
+  }
+
+  function flowFieldStepTarget(unitType, member, flowField) {
+    const cx = clamp(Math.floor(member.x), 0, COLS - 1);
+    const cy = clamp(Math.floor(member.y), 0, ROWS - 1);
+    const currentDistance = flowField[idx(cx, cy)];
+    if (!Number.isFinite(currentDistance)) return null;
+    const candidates = neighbors(cx, cy)
+      .filter((cell) => {
+        const score = flowField[idx(cell.x, cell.y)];
+        return score < currentDistance && !isBlockedForUnit(unitType, cell.x, cell.y);
+      })
+      .sort((a, b) => flowField[idx(a.x, a.y)] - flowField[idx(b.x, b.y)]);
+    return candidates.length ? cellCenter(candidates[0].x, candidates[0].y) : null;
+  }
+
+  function hasClearUnitLine(unitType, fromX, fromY, toX, toY) {
+    const distance = Math.hypot(toX - fromX, toY - fromY);
+    const steps = Math.max(1, Math.ceil(distance * 3));
+    for (let i = 1; i <= steps; i += 1) {
+      const t = i / steps;
+      const x = fromX + (toX - fromX) * t;
+      const y = fromY + (toY - fromY) * t;
+      if (isPointBlockedForUnit(unitType, x, y)) return false;
+    }
+    return true;
   }
 
   function combatFlowMoveTarget(squad, member) {
@@ -2414,17 +2458,34 @@
         if (shouldIgnoreFriendlyCollision(members[i], members[j])) continue;
         const aAnchored = isAnchoredArcher(members[i]);
         const bAnchored = isAnchoredArcher(members[j]);
-        const aShare = aAnchored && !bAnchored ? 0 : !aAnchored && bAnchored ? 1 : 0.5;
-        const bShare = bAnchored && !aAnchored ? 0 : !bAnchored && aAnchored ? 1 : 0.5;
+        const shares = soldierCollisionShares(members[i], members[j], aAnchored, bAnchored);
+        const aShare = shares.a;
+        const bShare = shares.b;
         pushApart(members[i], members[j], members[i].radius + members[j].radius, aShare, bShare);
       }
     }
     members.forEach((member) => {
       state.monsters.forEach((monster) => {
-        const soldierShare = member.type === "archer" ? 0 : member.type === "melee" ? 0.22 : 0.38;
+        const soldierShare = monster.radius <= 0.3 && member.type === "catapult" ? 0.16 : member.type === "archer" ? 0 : member.type === "melee" ? 0.22 : 0.38;
         pushApart(member, monster, member.radius + monster.radius + 0.08, soldierShare, 1 - soldierShare);
       });
     });
+  }
+
+  function soldierCollisionShares(a, b, aAnchored, bAnchored) {
+    if (aAnchored && !bAnchored) return { a: 0, b: 1 };
+    if (!aAnchored && bAnchored) return { a: 1, b: 0 };
+    const aMass = soldierCollisionMass(a);
+    const bMass = soldierCollisionMass(b);
+    const total = Math.max(0.001, aMass + bMass);
+    return { a: bMass / total, b: aMass / total };
+  }
+
+  function soldierCollisionMass(member) {
+    if (member.type === "catapult") return 8;
+    if (member.type === "melee") return 1.2;
+    if (member.type === "archer") return 1;
+    return 1;
   }
 
   function shouldIgnoreFriendlyCollision(a, b) {
@@ -3725,6 +3786,8 @@
       projectiles: state.projectiles.length,
     }),
     recruit: (type, count = 1, pay = false) => recruitUnits(type, count, pay),
+    placeStructure: (x, y, type = "wall") => placeStructure(x, y, type, false),
+    removeStructure: (x, y) => removeStructure(x, y, false),
     commandSquad: (type, x, y) => {
       const squad = state.squads.find((candidate) => candidate.type === type);
       if (!squad) return false;
