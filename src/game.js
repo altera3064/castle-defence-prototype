@@ -64,10 +64,8 @@
     },
     archer: {
       ...DEFAULT_UNIT_RENDER_PROFILE,
-      src: "asset/units/%EA%B6%81%EC%88%98%20%EC%97%90%EC%85%8B/%EA%B6%81%EC%88%98%20%EC%95%A0%EB%8B%88%EB%A9%94%EC%9D%B4%EC%85%98.png",
-      sourceRows: 4,
-      sourceRowsByState: [0, 1, 2, 0, 3],
-      normalize: true,
+      src: "asset/units/archer_sheet_clean.png?v=1",
+      normalize: false,
     },
     catapult: {
       ...DEFAULT_UNIT_RENDER_PROFILE,
@@ -156,7 +154,10 @@
   const MONSTER_SPAWN_LINE_X = COLS - 3;
   const CORE = { x: 8, y: 14, hp: 1200, maxHp: 1200 };
   const MAX_SQUAD_SIZE = 30;
+  const MEDIUM_SQUAD_SIZE = 3;
   const MAX_CATAPULTS = 10;
+  const CATAPULT_FORMATION_SLOT_SPACING = 2;
+  const CATAPULT_FORMATION_FOOTPRINT = 1;
   const SOLDIER_WALK_SPEED_THRESHOLD = 0.18;
   const WORLD_WIDTH = COLS * CELL;
   const WORLD_HEIGHT = ROWS * CELL;
@@ -176,7 +177,7 @@
   };
 
   const state = {
-    gold: 260,
+    gold: 1000,
     wave: 1,
     waveActive: false,
     spawnQueue: [],
@@ -644,6 +645,7 @@
     }
     placeStructure(14, 11, "meleeBarracks", false);
     placeStructure(14, 17, "archerBarracks", false);
+    placeStructure(14, 14, "catapultWorkshop", false);
     recruitUnit("melee", false);
     recruitUnit("archer", false);
     placeStructure(22, 9, "tower", false);
@@ -1234,7 +1236,8 @@
     if (type === "catapult" && unitCount("catapult") >= MAX_CATAPULTS) return false;
     if (pay && !spend(costs[type])) return false;
 
-    let army = state.squads.find((squad) => squad.type === type && squad.members.length < MAX_SQUAD_SIZE);
+    const squadLimit = squadSizeLimit(type);
+    let army = state.squads.find((squad) => squad.type === type && squad.members.length < squadLimit);
     if (!army) {
       army = {
         id: `${type}-army-${Math.random().toString(36).slice(2)}`,
@@ -1245,6 +1248,7 @@
         targetY: y + 0.5,
         flowField: null,
         formationSlots: null,
+        formationSlotFlowFields: null,
         combatMoveSlots: null,
         forceMoveCommand: false,
         movingToCommand: false,
@@ -1259,8 +1263,9 @@
     const offset = formationOffset(army.members.length, army.members.length + 1);
     member.squadId = army.id;
     member.slot = army.members.length;
-    member.x += offset.x * 0.35;
-    member.y += offset.y * 0.35;
+    const spawnSpacing = type === "catapult" ? 2.15 : 0.35;
+    member.x += offset.x * spawnSpacing;
+    member.y += offset.y * spawnSpacing;
     army.members.push(member);
     army.formationSize = army.members.length;
     updateArmyCenter(army);
@@ -1324,13 +1329,18 @@
 
   function formationSlotCells(squad, centerX, centerY) {
     const total = squad.formationSize || squad.members.length;
+    const spacing = formationSlotSpacing(squad.type);
     return squad.members.map((member, index) => {
       const local = formationSlotLocal(member.slot ?? index, total);
       return {
-        x: centerX + local.x,
-        y: centerY + local.y,
+        x: centerX + local.x * spacing,
+        y: centerY + local.y * spacing,
       };
     });
+  }
+
+  function formationSlotSpacing(type) {
+    return type === "catapult" ? CATAPULT_FORMATION_SLOT_SPACING : 1;
   }
 
   function updateArmyCenter(army) {
@@ -1380,14 +1390,27 @@
     if (Math.abs(dx) < 0.015 && Math.abs(dy) < 0.015) return;
     if (unit.type === "catapult") {
       if (unit.attackAnimTimer > 0) return;
-      if (Math.abs(dx) < 0.45) return;
+      if (Math.abs(dx) < 1.25) return;
+      const nextFacing = dx < 0 ? "left" : "right";
+      if (unit.facing && unit.facing !== nextFacing) {
+        unit.facingChangeFrames = (unit.facingChangeFrames || 0) + 1;
+        if (unit.facingChangeFrames < 16) return;
+      }
+      unit.facingChangeFrames = 0;
+      unit.facing = nextFacing;
+      return;
     }
     unit.facing = dx < 0 ? "left" : "right";
   }
 
   function setFacingForAttack(unit, target) {
     const dx = target.x - unit.x;
-    if (unit.type === "catapult" && Math.abs(dx) < 0.45) return;
+    if (unit.type === "catapult") {
+      if (Math.abs(dx) < 0.85) return;
+      unit.facing = dx < 0 ? "left" : "right";
+      unit.facingChangeFrames = 0;
+      return;
+    }
     setFacingFromDelta(unit, dx, target.y - unit.y);
   }
 
@@ -1416,15 +1439,20 @@
     });
   }
 
+  function squadSizeLimit(type) {
+    return type === "catapult" ? MEDIUM_SQUAD_SIZE : MAX_SQUAD_SIZE;
+  }
+
   function normalizeSquads(type) {
     const squadsOfType = state.squads.filter((squad) => squad.type === type);
     if (!squadsOfType.length) return;
     const selectedType = state.selectedSquad?.type;
     const members = squadsOfType.flatMap((squad) => squad.members).filter((member) => member.hp > 0);
+    const squadLimit = squadSizeLimit(type);
     state.squads = state.squads.filter((squad) => squad.type !== type);
-    for (let i = 0; i < members.length; i += MAX_SQUAD_SIZE) {
-      const chunk = members.slice(i, i + MAX_SQUAD_SIZE);
-      const squadId = `${type}-army-${i / MAX_SQUAD_SIZE}`;
+    for (let i = 0; i < members.length; i += squadLimit) {
+      const chunk = members.slice(i, i + squadLimit);
+      const squadId = `${type}-army-${i / squadLimit}`;
       chunk.forEach((member, slot) => {
         member.squadId = squadId;
         member.slot = slot;
@@ -1440,6 +1468,7 @@
         targetY: y,
         flowField: null,
         formationSlots: null,
+        formationSlotFlowFields: null,
         combatMoveSlots: null,
         forceMoveCommand: false,
         movingToCommand: false,
@@ -1470,7 +1499,7 @@
   function commandSelectedSquad(x, y) {
     if (!state.selectedSquad) return;
     const squad = state.selectedSquad;
-    const combatMove = combatPriorityActive() && squad.type !== "catapult";
+    const combatMove = combatPriorityActive();
     const movePlan = combatMove ? findCombatMoveCenter(squad, x, y) : findFormationCenter(squad, x, y);
     if (!movePlan) {
       setStatus("부대가 이동할 수 없는 위치입니다.");
@@ -1480,6 +1509,7 @@
     squad.targetY = movePlan.y + 0.5;
     squad.flowField = movePlan.flowField;
     squad.formationSlots = combatMove ? null : movePlan.slots;
+    squad.formationSlotFlowFields = combatMove ? null : movePlan.slotFlowFields || null;
     squad.combatMoveSlots = combatMove ? movePlan.slots : null;
     squad.forceMoveCommand = true;
     squad.commandIssuedDuringCombat = combatMove;
@@ -1502,9 +1532,11 @@
         for (let x = goalX - radius; x <= goalX + radius; x += 1) {
           if (Math.max(Math.abs(x - goalX), Math.abs(y - goalY)) !== radius) continue;
           if (!inBounds(x, y)) continue;
-          const slots = formationSlotCells(squad, x, y);
-          const fit = formationFitScore(squad, slots);
+          const slots = assignFormationSlots(squad, formationSlotCells(squad, x, y));
+          const fit = formationFitScore(squad, slots, true);
           if (fit < formationRequiredSlots(squad)) continue;
+          const slotFlowFields = squad.type === "catapult" ? buildSlotFlowFields(squad.type, slots) : null;
+          if (slotFlowFields && !squadCanReachAssignedSlots(squad, slotFlowFields)) continue;
           const flowField = buildFormationFlowField(squad.type, slots);
           if (!squadCanReachFlowField(squad, flowField)) continue;
           const goalDistance = Math.hypot(x - goalX, y - goalY);
@@ -1512,13 +1544,54 @@
           const score = fit * 1000 - goalDistance * 80 - squadDistance;
           if (score > bestScore) {
             bestScore = score;
-            best = { x, y, slots, flowField };
+            best = { x, y, slots, flowField, slotFlowFields };
           }
         }
       }
       if (best && radius >= 1) return best;
     }
     return best;
+  }
+
+  function buildSlotFlowFields(unitType, slots) {
+    return slots.map((slot) => buildUnitFlowField(unitType, slot.x, slot.y));
+  }
+
+  function assignFormationSlots(squad, slots) {
+    if (squad.type !== "catapult" || slots.length <= 1) return slots;
+    let bestSlots = slots;
+    let bestScore = Infinity;
+    const used = Array(slots.length).fill(false);
+    const assigned = [];
+
+    function search(index, score) {
+      if (score >= bestScore) return;
+      if (index >= squad.members.length) {
+        bestScore = score;
+        bestSlots = assigned.slice();
+        return;
+      }
+      const member = squad.members[index];
+      for (let i = 0; i < slots.length; i += 1) {
+        if (used[i]) continue;
+        used[i] = true;
+        assigned[index] = slots[i];
+        const center = cellCenter(slots[i].x, slots[i].y);
+        search(index + 1, score + Math.hypot(member.x - center.x, member.y - center.y));
+        used[i] = false;
+      }
+    }
+
+    search(0, 0);
+    return bestSlots;
+  }
+
+  function squadCanReachAssignedSlots(squad, slotFlowFields) {
+    return squad.members.every((member, index) => {
+      const memberX = clamp(Math.floor(member.x), 0, COLS - 1);
+      const memberY = clamp(Math.floor(member.y), 0, ROWS - 1);
+      return slotFlowFields[index]?.[idx(memberX, memberY)] < Infinity;
+    });
   }
 
   function findCombatMoveCenter(squad, goalX, goalY) {
@@ -1585,18 +1658,31 @@
     return { x: centerX, y: centerY };
   }
 
-  function formationFitScore(squad, slots) {
+  function formationFitScore(squad, slots, checkFootprint = false) {
     let openSlots = 0;
     slots.forEach((slot, index) => {
       const member = squad.members[index];
       if (!member || !inBounds(slot.x, slot.y)) return;
-      if (!isBlockedForUnit(member.type, slot.x, slot.y)) openSlots += 1;
+      const open = checkFootprint && member.type === "catapult"
+        ? isCatapultFormationSlotOpen(slot.x, slot.y)
+        : !isBlockedForUnit(member.type, slot.x, slot.y);
+      if (open) openSlots += 1;
     });
     return openSlots;
   }
 
+  function isCatapultFormationSlotOpen(x, y) {
+    for (let oy = -CATAPULT_FORMATION_FOOTPRINT; oy <= CATAPULT_FORMATION_FOOTPRINT; oy += 1) {
+      for (let ox = -CATAPULT_FORMATION_FOOTPRINT; ox <= CATAPULT_FORMATION_FOOTPRINT; ox += 1) {
+        const px = x + ox;
+        const py = y + oy;
+        if (!inBounds(px, py) || isBlockedForUnit("catapult", px, py)) return false;
+      }
+    }
+    return true;
+  }
+
   function formationRequiredSlots(squad) {
-    if (squad.type === "catapult") return 1;
     return squad.members.length;
   }
 
@@ -1950,7 +2036,6 @@
   }
 
   function squadShouldBreakFormationForCombat(squad) {
-    if (squad.type === "catapult") return false;
     if (squad.forceMoveCommand && !combatPriorityActive()) return false;
     if (squad.forceMoveCommand && squad.commandIssuedDuringCombat) {
       return false;
@@ -1966,6 +2051,7 @@
     squad.movingToCommand = false;
     squad.flowField = null;
     squad.formationSlots = null;
+    squad.formationSlotFlowFields = null;
     squad.combatMoveSlots = null;
     squad.forceMoveCommand = false;
     squad.commandIssuedDuringCombat = false;
@@ -1997,11 +2083,6 @@
   }
 
   function squadReachedCommand(squad) {
-    if (squad.type === "catapult") {
-      const squadDistanceToCommand = Math.hypot(squad.x - squad.targetX, squad.y - squad.targetY);
-      const averageDistanceToCommand = squadAverageDistanceToCommand(squad);
-      return squadDistanceToCommand <= 1.45 || averageDistanceToCommand <= 1.8;
-    }
     if (squad.commandIssuedDuringCombat) {
       return squadCombatMoveArrivalRatio(squad) >= 0.75;
     }
@@ -2012,6 +2093,9 @@
     if (member.commandHold) return { x: member.x, y: member.y };
     if (squad.commandIssuedDuringCombat) {
       return combatFlowMoveTarget(squad, member);
+    }
+    if (member.type === "catapult" && squad.formationSlotFlowFields?.[index]) {
+      return assignedFormationMoveTarget(squad, member, index);
     }
     const desiredFormation = squadSlotTarget(squad, member, index);
     if (!squad.flowField) return desiredFormation;
@@ -2028,7 +2112,8 @@
     let bestScore = currentDistance;
     neighbors(cx, cy).forEach((cell) => {
       const score = squad.flowField[idx(cell.x, cell.y)];
-      if (score < bestScore && !isBlockedForUnit(member.type, cell.x, cell.y)) {
+      if (score >= currentDistance || isBlockedForUnit(member.type, cell.x, cell.y)) return;
+      if (score < bestScore) {
         bestScore = score;
         best = cell;
       }
@@ -2036,6 +2121,29 @@
 
     if (!best) return desiredFormation;
     return cellCenter(best.x, best.y);
+  }
+
+  function assignedFormationMoveTarget(squad, member, index) {
+    const desiredFormation = squadSlotTarget(squad, member, index);
+    const distance = Math.hypot(member.x - desiredFormation.x, member.y - desiredFormation.y);
+    if (distance <= formationArrivalDistance(member.type)) return { x: member.x, y: member.y };
+    if (!isPointBlockedForUnit(member.type, desiredFormation.x, desiredFormation.y)) return desiredFormation;
+
+    const flowField = squad.formationSlotFlowFields[index];
+    const cx = clamp(Math.floor(member.x), 0, COLS - 1);
+    const cy = clamp(Math.floor(member.y), 0, ROWS - 1);
+    const currentDistance = flowField[idx(cx, cy)];
+    let best = null;
+    let bestScore = currentDistance;
+    neighbors(cx, cy).forEach((cell) => {
+      const score = flowField[idx(cell.x, cell.y)];
+      if (score >= bestScore || isBlockedForUnit(member.type, cell.x, cell.y)) return;
+      bestScore = score;
+      best = cell;
+    });
+
+    if (!best && Number.isFinite(currentDistance)) return { x: member.x, y: member.y };
+    return best ? cellCenter(best.x, best.y) : desiredFormation;
   }
 
   function combatFlowMoveTarget(squad, member) {
@@ -2052,7 +2160,8 @@
     let bestScore = currentDistance;
     neighbors(cx, cy).forEach((cell) => {
       const score = squad.flowField[idx(cell.x, cell.y)];
-      if (score < bestScore && !isBlockedForUnit(member.type, cell.x, cell.y)) {
+      if (score < bestScore) {
+        if (isBlockedForUnit(member.type, cell.x, cell.y)) return;
         bestScore = score;
         best = cell;
       }
@@ -2102,9 +2211,14 @@
     squad.members.forEach((member, index) => {
       const target = squadSlotTarget(squad, member, index);
       const distance = Math.hypot(member.x - target.x, member.y - target.y);
-      if (member.commandHold || distance <= 0.34) arrived += 1;
+      const heldInPlace = member.commandHold && member.type !== "catapult";
+      if (heldInPlace || distance <= formationArrivalDistance(member.type)) arrived += 1;
     });
     return arrived / squad.members.length;
+  }
+
+  function formationArrivalDistance(type) {
+    return type === "catapult" ? 0.65 : 0.34;
   }
 
   function squadCombatMoveArrivalRatio(squad) {
@@ -2145,7 +2259,7 @@
         target,
         tx: target.x,
         ty: target.y,
-        speed: 3.2 / distance,
+        speed: 1.12,
         arc: clamp(distance * 0.34, 2.1, 3.4),
         damage: member.damage,
         splash: member.splash,
@@ -2189,19 +2303,18 @@
       shot.tx = shot.target.x;
       shot.ty = shot.target.y;
     }
-    const distance = Math.max(0.1, Math.hypot(shot.tx - member.x, shot.ty - member.y));
     state.projectiles.push({
       type: "stone",
       x: member.x,
-      y: member.y - 0.18,
+      y: member.y - 1.35,
       groundX: member.x,
-      groundY: member.y - 0.18,
+      groundY: member.y - 1.35,
       sx: member.x,
-      sy: member.y - 0.18,
+      sy: member.y - 1.35,
       tx: shot.tx,
       ty: shot.ty,
       progress: 0,
-      speed: 3.2 / distance,
+      speed: shot.speed,
       arc: shot.arc,
       lift: 0,
       angle: Math.atan2(shot.ty - member.y, shot.tx - member.x),
@@ -2316,6 +2429,7 @@
 
   function shouldIgnoreFriendlyCollision(a, b) {
     if (!a.squadId || a.squadId !== b.squadId) return false;
+    if (a.type === "catapult" || b.type === "catapult") return false;
     const squad = state.squads.find((candidate) => candidate.id === a.squadId);
     return Boolean(squad?.movingToCommand && !squad.commandIssuedDuringCombat);
   }
@@ -2340,21 +2454,41 @@
   function pushApart(a, b, minDistance, aShare = 0.5, bShare = 0.5) {
     const dx = b.x - a.x;
     const dy = b.y - a.y;
-    const d = Math.hypot(dx, dy) || 0.001;
+    let d = Math.hypot(dx, dy);
     if (d >= minDistance) return;
+    let nx;
+    let ny;
+    if (d <= 0.001) {
+      const angle = entitySeparationAngle(a, b);
+      nx = Math.cos(angle);
+      ny = Math.sin(angle);
+      d = 0.001;
+    } else {
+      nx = dx / d;
+      ny = dy / d;
+    }
     const overlap = minDistance - d;
-    const ax = a.x - (dx / d) * overlap * aShare;
-    const ay = a.y - (dy / d) * overlap * aShare;
-    const bx = b.x + (dx / d) * overlap * bShare;
-    const by = b.y + (dy / d) * overlap * bShare;
-    if (!isPointBlocked(ax, ay)) {
+    const ax = a.x - nx * overlap * aShare;
+    const ay = a.y - ny * overlap * aShare;
+    const bx = b.x + nx * overlap * bShare;
+    const by = b.y + ny * overlap * bShare;
+    if (!isPointBlockedForUnit(a.type || "default", ax, ay)) {
       a.x = ax;
       a.y = ay;
     }
-    if (!isPointBlocked(bx, by)) {
+    if (!isPointBlockedForUnit(b.type || "default", bx, by)) {
       b.x = bx;
       b.y = by;
     }
+  }
+
+  function entitySeparationAngle(a, b) {
+    const source = `${a.id || a.type || "a"}:${b.id || b.type || "b"}`;
+    let hash = 0;
+    for (let i = 0; i < source.length; i += 1) {
+      hash = (hash * 31 + source.charCodeAt(i)) >>> 0;
+    }
+    return (hash / 0xffffffff) * Math.PI * 2;
   }
 
   function updateTowers(dt) {
@@ -3565,6 +3699,19 @@
         count: squad.members.length,
         x: Number(squad.x.toFixed(2)),
         y: Number(squad.y.toFixed(2)),
+        targetX: Number(squad.targetX.toFixed(2)),
+        targetY: Number(squad.targetY.toFixed(2)),
+        movingToCommand: !!squad.movingToCommand,
+        occupiedCells: new Set(squad.members.map((member) => `${Math.floor(member.x)},${Math.floor(member.y)}`)).size,
+        heldMembers: squad.members.filter((member) => member.commandHold).length,
+        formationSlots: squad.formationSlots?.map((slot) => ({ x: slot.x, y: slot.y })) || [],
+        formationSlotFlowFields: squad.formationSlotFlowFields?.length || 0,
+        members: squad.members.map((member) => ({
+          x: Number(member.x.toFixed(2)),
+          y: Number(member.y.toFixed(2)),
+          state: member.animState,
+          hold: !!member.commandHold,
+        })),
         sampleState: squad.members[0]?.animState,
         sampleFrame: squad.members[0] ? spriteFrameIndex(squad.members[0], squad.members[0].animState) : null,
         sampleFacing: squad.members[0]?.facing,
@@ -3577,6 +3724,14 @@
       })),
       projectiles: state.projectiles.length,
     }),
+    recruit: (type, count = 1, pay = false) => recruitUnits(type, count, pay),
+    commandSquad: (type, x, y) => {
+      const squad = state.squads.find((candidate) => candidate.type === type);
+      if (!squad) return false;
+      state.selectedSquad = squad;
+      commandSelectedSquad(x, y);
+      return true;
+    },
   };
 
   setup();
