@@ -83,8 +83,8 @@
     },
     runner: {
       ...DEFAULT_UNIT_RENDER_PROFILE,
-      src: "asset/units/runner.png",
-      scale: 0.85,
+      src: "asset/units/moloch_small_minion_sprite_576x960_game.png?v=3",
+      scale: 2.7,
       normalize: false,
     },
     bruiser: {
@@ -1279,7 +1279,7 @@
     const stats = {
       melee: { hp: 170 + level * 34, damage: 16 + level * 3, range: 1.05, speed: 2.85, radius: 0.34, splash: 0 },
       archer: { hp: 95 + level * 24, damage: 12 + level * 3, range: 5.4, speed: 2.8, radius: 0.3, splash: 0 },
-      catapult: { hp: 240 + level * 35, damage: 42 + level * 6, range: 7.2, speed: 1.45, radius: 1.0, splash: 2.0 },
+      catapult: { hp: 240 + level * 35, damage: 42 + level * 6, range: 10, speed: 1.45, radius: 1.0, splash: 2.0 },
     }[type];
     return {
       id: Math.random().toString(36).slice(2),
@@ -2501,6 +2501,7 @@
 
   function resolveBattlefieldCollisions() {
     const soldiers = getAllSoldiers();
+    const monsterPositions = state.monsters.map((monster) => ({ monster, x: monster.x, y: monster.y }));
     resolveSoldierCollisions(soldiers);
     for (let i = 0; i < state.monsters.length; i += 1) {
       for (let j = i + 1; j < state.monsters.length; j += 1) {
@@ -2510,6 +2511,15 @@
         pushApart(a, b, a.radius + b.radius + 0.03);
       }
     }
+    monsterPositions.forEach(({ monster, x, y }) => {
+      if (monster.hp <= 0 || monster.attackAnimTimer > 0 || monster.hitAnimTimer > 0) return;
+      const dx = monster.x - x;
+      const dy = monster.y - y;
+      if (Math.hypot(dx, dy) <= 0.003) return;
+      monster.walkGrace = 0.12;
+      setFacingFromDelta(monster, dx, dy);
+      setUnitAnimState(monster, "walk");
+    });
   }
 
   function pushApart(a, b, minDistance, aShare = 0.5, bShare = 0.5) {
@@ -2611,9 +2621,10 @@
       }
 
       const moved = moveMonster(monster, dt);
+      monster.walkGrace = moved ? 0.12 : Math.max(0, (monster.walkGrace || 0) - dt);
       if (monster.attackAnimTimer > 0) setUnitAnimState(monster, "attack");
       else if (monster.hitAnimTimer > 0) setUnitAnimState(monster, "hit");
-      else setUnitAnimState(monster, moved ? "walk" : "idle");
+      else setUnitAnimState(monster, monster.walkGrace > 0 ? "walk" : "idle");
     });
   }
 
@@ -3037,6 +3048,9 @@
         x: Number(monster.x.toFixed(2)),
         y: Number(monster.y.toFixed(2)),
         hp: Math.ceil(monster.hp),
+        state: monster.animState,
+        frame: spriteFrameIndex(monster, monster.animState),
+        walkGrace: Number((monster.walkGrace || 0).toFixed(2)),
       })),
     });
   }
@@ -3782,6 +3796,9 @@
         x: Number(monster.x.toFixed(2)),
         y: Number(monster.y.toFixed(2)),
         hp: Math.ceil(monster.hp),
+        state: monster.animState,
+        frame: spriteFrameIndex(monster, monster.animState),
+        walkGrace: Number((monster.walkGrace || 0).toFixed(2)),
       })),
       projectiles: state.projectiles.length,
     }),
